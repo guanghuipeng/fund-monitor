@@ -7,6 +7,8 @@ on:
     - cron: "35 3 * * 1-5"
     # 15:05 收盘（07:05 UTC）：收盘后立刻看当日结果
     - cron: "5 7 * * 1-5"
+    # 18:05 晚间推送（10:05 UTC）：每天固定这个时间发一条日报
+    - cron: "5 10 * * 1-5"
     # 21:35 晚间（13:35 UTC）：官方估值数据更新后复核
     - cron: "35 13 * * 1-5"
   workflow_dispatch:
@@ -64,7 +66,9 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python index_watch.py --push --signal-only --daily
+          # 18:05 那次固定发一条日报；其它时间只在出现新信号时发
+          PUSH_ARGS: "${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '5 10 * * 1-5') && '--daily --signal-only' || '--signal-only' }}"
+        run: python index_watch.py --push $PUSH_ARGS
 
       - name: Commit and push
         env:
