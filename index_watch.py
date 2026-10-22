@@ -328,7 +328,7 @@ def distance_text(row):
 
 
 def markdown(rows, title_date=None):
-    d = title_date or date.today().isoformat()
+    d = title_date or datetime.now(CN_TZ).date().isoformat()
     lines = ["## 指数星级日报｜%s" % d, ""]
     verdict_bits = []
     for r in rows:
@@ -413,8 +413,8 @@ def _spark(points, up, width=112, height=32):
 
 
 def html(rows, title_date=None):
-    d = title_date or date.today().isoformat()
-    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+    d = title_date or datetime.now(CN_TZ).date().isoformat()
+    generated = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M")
     data_dates = sorted({r["data_date"] for r in rows})
     data_date_text = data_dates[-1] if data_dates else d
     quote_times = sorted({r["quote_time"] for r in rows if r.get("quote_time")})
@@ -636,7 +636,7 @@ def push(rows):
         return 1
     main_row = next((r for r in rows if r["key"] == "zz800"), None)
     title = "指数星级｜%s" % (("中证800 %.2f★" % main_row["star"])
-                             if main_row else date.today().isoformat())
+                             if main_row else datetime.now(CN_TZ).date().isoformat())
     ok, msg = ds.send_push(config, title, markdown(rows))
     if ok:
         print("推送成功：%s" % title)
