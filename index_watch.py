@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""指数星级日报：中证800 / 中证500 / 全市场。
+"""指数星级日报：中证800 / 中证500 / 沪深300 / 全市场。
 
 星级只看指数自己的历史，不是螺丝钉的全市场星级：
   修正星级 = min(估值星级, 价格星级)
@@ -11,8 +11,8 @@
   4.8 星 = 估值分位 <=20% 且价格距 3 年高点 <= -26%
   全市场没有统一价格指数，所以全市场只算估值星级，作参考。
 
-买卖动作使用 v3 规则（见 v3_rule.py）：深度首笔 + 趋势加仓 +
-60%/63% 卖出 + 强趋势 12% 移动止盈 + 40% 浮盈保险。
+买卖动作使用 v3.1 规则（见 v3_rule.py）：深度首笔 + 趋势加仓 +
+V 型底补仓 + 60%/63% 卖出 + 强趋势 12% 移动止盈 + 40% 浮盈保险。
 
 用法：
   python index_watch.py                     # 终端打印
@@ -36,10 +36,13 @@ CONFIG_PATH = os.path.join(BASE, "config.json")
 ALERT_STATE_PATH = os.path.join(BASE, "data", "alert_state.json")
 PAGE_URL = os.environ.get("INDEX_PAGE_URL") or ""
 
-DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"), ("market", "全市场")]
+DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"),
+                ("hs300", "沪深300"), ("market", "全市场")]
 
-QUOTE_SECIDS = {"zz800": "1.000906", "zz500": "1.000905"}
-QUOTE_TENCENT = {"zz800": "sh000906", "zz500": "sh000905"}
+QUOTE_SECIDS = {"zz800": "1.000906", "zz500": "1.000905",
+                "hs300": "1.000300"}
+QUOTE_TENCENT = {"zz800": "sh000906", "zz500": "sh000905",
+                 "hs300": "sh000300"}
 CN_TZ = timezone(timedelta(hours=8))
 
 
@@ -379,7 +382,7 @@ def markdown(rows, title_date=None):
     for r in rows:
         lines.append("- **%s**：%.2f 星。%s。" % (r["name"], r["star"], distance_text(r)))
     lines.append("")
-    lines.append("### v3 规则（已启用）")
+    lines.append("### v3.1 规则（已启用）")
     for r in rows:
         if not r["tradeable"] or not r.get("v3_action"):
             continue
@@ -390,7 +393,7 @@ def markdown(rows, title_date=None):
     for r in rows:
         if not r["tradeable"]:
             continue
-        lines.append("- **%s**：现行规则说“%s”；v3 说“%s”。" % (
+        lines.append("- **%s**：现行规则说“%s”；v3.1 说“%s”。" % (
             r["name"], r.get("v3_current_action") or "不买",
             r.get("v3_action") or "等待"))
     lines.append("")
@@ -398,6 +401,7 @@ def markdown(rows, title_date=None):
     lines.append("- 买入：4.8★ 首笔按 1 年回撤加深：≤-60% 投 2/3，"
                  "≤-40% 投 1/2，否则 1/3；剩余现金分给 T2/T3。")
     lines.append("- 加仓：T2 较 T1 跌 10%，或 T1 一年回撤≤-40% 且 120 日线转上；"
+                 "若价格始终不到，T1 后 60 天且年线向上、现价高于年线 8% 时补第二笔；"
                  "T3 较 T1 跌 20%，或 250 日线转上。")
     lines.append("- 卖出：全历史分位 ≥60% 卖 1/3；≥63% 卖剩余 2/3；"
                  "若点位高于年线 30%，剩余改 12% 移动止盈。")
@@ -595,7 +599,7 @@ h1{font-size:21px}
 <body>
 <main>
 <h1>指数星级日报</h1>
-<p class="meta">估值数据截至 %(data_date)s%(quote_text)s%(estimate_text)s · 生成于 %(generated)s · 中证800 / 中证500 / 全市场</p>
+<p class="meta">估值数据截至 %(data_date)s%(quote_text)s%(estimate_text)s · 生成于 %(generated)s · 中证800 / 中证500 / 沪深300 / 全市场</p>
 <section class="verdicts">%(verdicts)s</section>
 <section class="card">
 <table>
@@ -616,11 +620,12 @@ h1{font-size:21px}
 <ul>%(distance)s</ul>
 </section>
 <section class="card">
-<h2>v3 规则（已启用）</h2>
+<h2>v3.1 规则（已启用）</h2>
 <ul>%(v3_items)s</ul>
-<p class="rule">v3 与现行规则的差别：首笔按 1 年回撤加深；T2/T3 增加趋势确认；
-保险改为 40%% 浮盈 + 年线向上过滤；强趋势中 63%% 不卖剩余 2/3，改用高点回撤 12%%。
-网页和推送现在都按 v3 给出动作，下面仍保留现行规则对照。</p>
+<p class="rule">v3.1 与现行规则的差别：首笔按 1 年回撤加深；T2/T3 增加趋势确认，
+浅 V 底在 T1 后 60 天站上年线 8%% 时补第二笔；保险改为 40%% 浮盈 + 年线向上过滤；
+强趋势中 63%% 不卖剩余 2/3，改用高点回撤 12%%。网页和推送现在都按 v3.1 给出动作，
+下面仍保留现行规则对照。</p>
 </section>
 <section class="card rule">
 <h2>怎么读</h2>
@@ -629,6 +634,7 @@ h1{font-size:21px}
 <p>买入：4.8★ 首笔按 1 年回撤加深（≤-60%% 投 2/3，≤-40%% 投 1/2，否则 1/3），
 剩余现金分给 T2/T3。<br>
 加仓：T2 较 T1 跌 10%%，或 T1 一年回撤≤-40%% 且 120 日线转上；
+若价格始终不到，T1 后 60 天且年线向上、现价高于年线 8%% 时补第二笔；
 T3 较 T1 跌 20%%，或 250 日线转上。<br>
 卖出：全历史分位 ≥60%% 卖 1/3；≥63%% 卖剩余 2/3；若点位高于年线 30%%，剩余改 12%% 移动止盈。<br>
 保险：浮盈最高 ≥40%% 后，从本轮高点回撤 10%% 且年线向上，清仓；强趋势中不触发。</p>
@@ -732,7 +738,7 @@ def _brief_items(rows):
 
 
 def _fresh_desc(fresh):
-    names = {"zz800": "中证800", "zz500": "中证500"}
+    names = {"zz800": "中证800", "zz500": "中证500", "hs300": "沪深300"}
     return "；".join("%s %s" % (names.get(k.split(":")[0], k), v)
                     for k, v in sorted(fresh.items()))
 
@@ -839,9 +845,10 @@ def push(rows, signal_only=False, daily=False):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="中证800/中证500/全市场 指数星级日报")
+    ap = argparse.ArgumentParser(
+        description="中证800/中证500/沪深300/全市场 指数星级日报")
     ap.add_argument("--index", default="all",
-                    choices=["all", "zz800", "zz500", "market"])
+                    choices=["all", "zz800", "zz500", "hs300", "market"])
     ap.add_argument("--weight-hs300", type=float, default=0.75,
                     help="合成中证800时沪深300的市值权重，默认 0.75")
     ap.add_argument("--refresh", action="store_true",

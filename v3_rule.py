@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""v3 规则的实时状态：深度首笔 + 趋势加仓 + 40% 保险 + 12% 移动止盈。
+"""v3.1 规则的实时状态：深度首笔 + 趋势加仓 + V 型底补仓 + 40% 保险 + 12% 移动止盈。
 
 直接复用 rule_validation.simulate，保证网页/推送和回测完全同一套逻辑。
 """
@@ -15,6 +15,10 @@ INSURANCE_GAIN = 0.40
 INSURANCE_DD = 0.10
 DEEP_FRAC = 2.0 / 3.0
 MID_FRAC = 0.5
+# V 型底补仓：T1 后 60 天，年线向上且现价高于年线 8%，补第二笔。
+# 用于沪深300 2018 那种只跌 8%、等不到 T1×0.90 的浅 V 底。
+CATCHUP_DAYS = 60
+CATCHUP_ABOVE_MA250 = 0.08
 
 
 def _avg(xs):
@@ -162,7 +166,9 @@ def attach(row, key, weight_hs300):
         res = rv.simulate(series, rule="bull-trail", trail=TRAIL, bull=BULL,
                           entry_mode="depth_trend", insurance_mode="trend",
                           insurance_gain=INSURANCE_GAIN,
-                          insurance_dd=INSURANCE_DD)
+                          insurance_dd=INSURANCE_DD,
+                          catchup_days=CATCHUP_DAYS,
+                          catchup_above_ma250=CATCHUP_ABOVE_MA250)
     except Exception:  # noqa: BLE001
         return
 
@@ -288,8 +294,8 @@ def attach(row, key, weight_hs300):
     elif stage < 3:
         nxt = stage + 1
         if nxt == 2:
-            row["v3_action"] = ("持有；等第二笔：≤%s，或 T1 一年回撤≤-40%%"
-                                "且 120 日线转上"
+            row["v3_action"] = ("持有；等第二笔：≤%s，或趋势确认"
+                                "（120 日线转上 / T1 后 60 天站上年线+8%%）"
                                 % _px(_display_px(row, row["v3_t2_px"])))
             row["v3_short"] = "持有，等第二笔"
         else:

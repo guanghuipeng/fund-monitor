@@ -16,10 +16,12 @@
   卖出：全历史分位 >= 60% 卖 1/3；>= 63% 卖剩余 2/3。
   保险：最大浮盈 >= 45% 后，从本轮高点回撤 10% 清仓（S1 前）。
 
---v3 使用线上 v3（与 v3_rule.py 一致）：
+--v3 使用线上 v3.1（与 v3_rule.py 一致）：
   T1 4.8★ 按 1 年回撤深度买 1/3、1/2 或 2/3；T2/T3 在跌 10%/20%
-  或趋势确认时加仓；卖出仍为 60%/63%，强趋势中剩余仓位改用
-  12% 移动止盈；保险改为最大浮盈 >= 40% + 回撤 10% + 年线向上。
+  或趋势确认时加仓；若 T2 价格始终不到，T1 后 60 天且年线向上、
+  现价高于年线 8% 时补第二笔（V 型底）；卖出仍为 60%/63%，
+  强趋势中剩余仓位改用 12% 移动止盈；保险改为最大浮盈 >= 40%
+  + 回撤 10% + 年线向上。
 
 输出
 ----
@@ -129,7 +131,9 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
              fixed_cash=False, entry_mode="current",
              insurance_mode="current", insurance_gain=INSURANCE_GAIN,
              insurance_dd=INSURANCE_DD, deep_frac=2.0 / 3.0,
-             mid_frac=0.5, time_fill_days=365, cash_rate=0.0):
+             mid_frac=0.5, time_fill_days=365, cash_rate=0.0,
+             catchup_days=0, catchup_max_p=1.0,
+             catchup_above_ma250=0.0):
     """从第一笔 4.8 星开始，按当前规则滚动运行；清仓后等待下一轮。
 
     rule="current"   : 分位 >= 60% 卖 1/3，>= 63% 卖剩余。
@@ -147,6 +151,12 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
                        60/120 日均线转向上时加仓（较激进，仅研究用）。
     insurance_mode="trend": 保险层只在 250 日均线仍向上时触发；均线下行
                        的初期反弹不因 10% 回调清仓。
+    catchup_days>0 : T2 价格未跌 10% 时，若从 T1 起已过 N 天、250 日线
+                       向上且现价站上年线，则补第二笔；默认 0（关闭）。
+                       用于 V 型底只买到 T1 的情况，需先回测确认。
+    catchup_max_p  : 补仓时允许的最高全历史分位，默认 1.0（不限制）。
+    catchup_above_ma250: 补仓时要求现价高于年线的最小幅度，默认 0。
+                       用来区分“有效反转”和“贴着年线的熊市反弹”。
     """
     cash = CASH0
     shares = 0.0
@@ -269,7 +279,13 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
                     and last_buy_px and px > last_buy_px * 1.05
                     and ma250_up
                 )
-            if px <= trig or trend_ok or time_ok:
+            catchup_ok = bool(
+                catchup_days > 0 and stage == 1 and last_buy_date is not None
+                and (d - last_buy_date).days >= catchup_days
+                and ma250_up and p <= catchup_max_p
+                and (px / row["ma250"] - 1.0) >= catchup_above_ma250
+            )
+            if px <= trig or trend_ok or time_ok or catchup_ok:
                 amt = min(per_buy, cash)
                 if amt > 1e-6:
                     sh = amt / px
@@ -625,6 +641,14 @@ def main(argv=None):
                     help="保险层触发所需最大浮盈，默认 0.45")
     ap.add_argument("--cash-rate", type=float, default=0.0,
                     help="空仓现金年化收益，默认 0；如 0.015 表示 1.5%%")
+    ap.add_argument("--catchup-days", type=int, default=None,
+                    help="V 型底趋势补仓：T1 后 N 天、年线向上且站上年线时"
+                         "补第二笔；--v3 默认 60，其他模式默认 0 关闭")
+    ap.add_argument("--catchup-max-p", type=float, default=1.0,
+                    help="趋势补仓允许的最高全历史分位，默认 1.0 不限制")
+    ap.add_argument("--catchup-above-ma250", type=float, default=None,
+                    help="趋势补仓要求现价高于年线的最小幅度，如 0.10 表示 10%%；"
+                         "--v3 默认 0.08")
     ap.add_argument("--v3", action="store_true",
                     help="使用线上 v3 预设：12%% 移动止盈 + 深度首笔 + "
                          "趋势加仓 + 40%%/年线保险")
@@ -639,6 +663,15 @@ def main(argv=None):
         args.entry = "depth_trend"
         args.insurance_mode = "trend"
         args.insurance_gain = 0.40
+        if args.catchup_days is None:
+            args.catchup_days = 60
+        if args.catchup_above_ma250 is None:
+            args.catchup_above_ma250 = 0.08
+
+    if args.catchup_days is None:
+        args.catchup_days = 0
+    if args.catchup_above_ma250 is None:
+        args.catchup_above_ma250 = 0.0
 
     keys = (["zz500", "zz800", "hs300"]
             if args.index == "all" else [args.index])
@@ -650,7 +683,10 @@ def main(argv=None):
                        bull=args.bull, entry_mode=args.entry,
                        insurance_mode=args.insurance_mode,
                        insurance_gain=args.insurance_gain,
-                       cash_rate=args.cash_rate)
+                       cash_rate=args.cash_rate,
+                       catchup_days=args.catchup_days,
+                       catchup_max_p=args.catchup_max_p,
+                       catchup_above_ma250=args.catchup_above_ma250)
         m = analyze(series, res)
         print_report(key, series, res, m)
         out.append(dict(key=key, final=res["final"],
