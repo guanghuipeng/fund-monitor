@@ -655,17 +655,18 @@ def _load_alert_state():
     try:
         with open(ALERT_STATE_PATH, encoding="utf-8") as fh:
             obj = json.load(fh)
-        return set(obj.get("signals") or [])
+        return obj if isinstance(obj, dict) else {}
     except (OSError, ValueError):
-        return set()
+        return {}
 
 
-def _save_alert_state(signals):
+def _save_alert_state(signals, last_daily=""):
     parent = os.path.dirname(ALERT_STATE_PATH)
     os.makedirs(parent, exist_ok=True)
     with open(ALERT_STATE_PATH, "w", encoding="utf-8") as fh:
         json.dump({"date": datetime.now(CN_TZ).date().isoformat(),
-                   "signals": sorted(signals)}, fh, ensure_ascii=False, indent=1)
+                   "signals": sorted(signals),
+                   "last_daily": last_daily}, fh, ensure_ascii=False, indent=1)
 
 
 def _push_configured(config):
@@ -673,40 +674,61 @@ def _push_configured(config):
     return bool(push_cfg.get("enabled")
                 or os.environ.get("SERVERCHAN_KEY")
                 or os.environ.get("PUSHPLUS_TOKEN")
-                or os.environ.get("SMTP_HOST"))
+                or os.environ.get("SMTP_HOST")
+                or (os.environ.get("GITHUB_TOKEN")
+                    and os.environ.get("GITHUB_REPOSITORY")))
 
 
-def push(rows, signal_only=False):
+def push(rows, signal_only=False, daily=False):
     import datasource as ds
     config = load_config()
     if not _push_configured(config):
         print("推送未配置：GitHub Actions 里加 SERVERCHAN_KEY（或 SMTP_*）Secret；"
               "本地则在 config.json 填 push 配置。")
-        return 0 if signal_only else 1
+        return 0 if (signal_only or daily) else 1
 
+    state = _load_alert_state()
+    previous = set(state.get("signals") or [])
+    last_daily = state.get("last_daily") or ""
     current = _alert_signals(rows)
-    previous = _load_alert_state()
     fresh = {k: v for k, v in current.items() if k not in previous}
-    if signal_only and not fresh:
-        _save_alert_state(current)
+    now = datetime.now(CN_TZ)
+    today = now.date().isoformat()
+
+    if daily and not fresh:
+        if last_daily == today:
+            _save_alert_state(current, last_daily)
+            print("今天已经推送过日报，跳过。")
+            return 0
+        if now.hour < 15:
+            _save_alert_state(current, last_daily)
+            print("收盘前不推日报，等 15:00 后再推。")
+            return 0
+    if signal_only and not fresh and not daily:
+        _save_alert_state(current, last_daily)
         print("今天没有新的买卖信号，跳过推送。")
         return 0
 
     names = {"zz800": "中证800", "zz500": "中证500"}
-    desc = "；".join("%s %s" % (names.get(k.split(":")[0], k), v)
-                    for k, v in sorted(fresh.items()))
-    title = "指数信号｜%s %s" % (datetime.now(CN_TZ).strftime("%m-%d"),
-                                desc or "星级更新")
-    content = markdown(rows)
     if fresh:
-        content = "**本次新增信号**：%s\n\n%s" % (desc, content)
+        desc = "；".join("%s %s" % (names.get(k.split(":")[0], k), v)
+                        for k, v in sorted(fresh.items()))
+        title = "指数信号｜%s %s" % (now.strftime("%m-%d"), desc)
+        content = "**本次新增信号**：%s\n\n%s" % (desc, markdown(rows))
+    else:
+        row800 = next((r for r in rows if r["key"] == "zz800"), None)
+        title = "指数日报｜%s %s" % (
+            now.strftime("%m-%d"),
+            ("中证800 %.2f★" % row800["star"]) if row800 else "星级更新")
+        content = markdown(rows)
+
     ok, msg = ds.send_push(config, title, content, html_body=html(rows))
     if ok:
-        _save_alert_state(current)
+        _save_alert_state(current, today if daily else last_daily)
         print("推送成功：%s" % title)
         return 0
     # 发送失败：保留仍未消失的旧信号，下次继续尝试，不把新信号记成已提醒
-    _save_alert_state(previous & set(current))
+    _save_alert_state(previous & set(current), last_daily)
     print("推送失败：%s" % msg, file=sys.stderr)
     return 1
 
@@ -724,6 +746,8 @@ def main(argv=None):
                     help="通过 Server酱/PushPlus/邮件推送")
     ap.add_argument("--signal-only", action="store_true",
                     help="只在出现新的买/卖档位时推送（配合 --push）")
+    ap.add_argument("--daily", action="store_true",
+                    help="每天收盘后推一次日报（有新信号则盘中立即推）")
     ap.add_argument("--md", default=None, help="把 Markdown 写到指定文件")
     ap.add_argument("--html", default=None,
                     help="生成静态 HTML（可直接放 GitHub Pages）")
@@ -752,7 +776,7 @@ def main(argv=None):
         print("HTML 已写入：%s" % args.html)
 
     if args.push:
-        return push(rows, signal_only=args.signal_only)
+        return push(rows, signal_only=args.signal_only, daily=args.daily)
     return 0
 
 

@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: update-index
@@ -45,12 +46,17 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python index_watch.py --refresh --html docs/index.html
 
-      # 只有出现新的买/卖档位才推送；重复的档位不会每天刷屏。
-      # 没配 Secret 时这一步会直接跳过，不影响页面更新。
+      # 测试期：每天收盘推一次日报；盘中出现新的买/卖档位则立即推。
+      # 稳定后把 --daily 去掉，就只剩“新信号才推”。没配 Secret 时自动跳过。
       - name: Push actionable signal
         continue-on-error: true
         env:
           PYTHONIOENCODING: utf-8
+          # 默认走 GitHub Issue -> GitHub 邮件 -> QQ 邮箱；想换方式就改仓库变量 PUSH_PROVIDER
+          PUSH_PROVIDER: ${{ vars.PUSH_PROVIDER || 'github_issue' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -58,7 +64,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-        run: python index_watch.py --push --signal-only
+        run: python index_watch.py --push --signal-only --daily
 
       - name: Commit and push
         env:

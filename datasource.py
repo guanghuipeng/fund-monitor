@@ -648,6 +648,50 @@ def send_pushplus(token, title, markdown, timeout=15):
     return ok, text[:300]
 
 
+GITHUB_ISSUE_TITLE = "指数星级提醒（自动）"
+
+
+def send_github_issue(token, repo, title, markdown, mention=None, timeout=15):
+    """在一个固定的 issue 里追加评论，GitHub 会给 assignee / 被 @ 的人发邮件。
+
+    不新建一堆 issue：第一次创建，之后都作为评论追加，历史也留在同一个帖子里。
+    """
+    api = "https://api.github.com/repos/%s/issues" % repo
+    headers = {
+        "Authorization": "Bearer %s" % token,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": UA,
+        "Content-Type": "application/json; charset=utf-8",
+    }
+
+    def call(url, payload=None):
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload else None
+        req = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(_decode(resp.read()))
+
+    body = markdown
+    if mention:
+        body = "@%s\n\n%s" % (mention, markdown)
+    try:
+        issues = call(api + "?state=open&per_page=100")
+        tracking = None
+        if isinstance(issues, list):
+            tracking = next((it for it in issues
+                             if it.get("title") == GITHUB_ISSUE_TITLE
+                             and not it.get("pull_request")), None)
+        if tracking:
+            call("%s/%d/comments" % (api, tracking["number"]), {"body": body})
+            return True, "已追加到 issue #%d" % tracking["number"]
+        payload = {"title": GITHUB_ISSUE_TITLE, "body": body}
+        if mention:
+            payload["assignees"] = [mention]
+        it = call(api, payload)
+        return True, "已创建 issue #%s" % it.get("number")
+    except Exception as exc:  # noqa: BLE001
+        return False, "%s: %s" % (type(exc).__name__, exc)
+
+
 def send_email(host, port, user, password, to, subject, body, timeout=20):
     """SMTP 发信；body 可以是 HTML。465 端口走 SSL，其余走 STARTTLS。"""
     import smtplib
@@ -686,6 +730,14 @@ def send_push(config, title, markdown, html_body=None):
         else:
             provider = "serverchan"
     try:
+        if provider == "github_issue":
+            token = os.environ.get("GITHUB_TOKEN") or ""
+            repo = os.environ.get("GITHUB_REPOSITORY") or ""
+            owner = os.environ.get("GITHUB_REPOSITORY_OWNER") or (
+                repo.split("/")[0] if repo else "")
+            if not (token and repo):
+                return False, "GitHub Issue 推送需要 GITHUB_TOKEN 和 GITHUB_REPOSITORY"
+            return send_github_issue(token, repo, title, markdown, mention=owner)
         if provider == "email":
             host = os.environ.get("SMTP_HOST") or push.get("smtp_host") or ""
             port = os.environ.get("SMTP_PORT") or push.get("smtp_port") or "465"

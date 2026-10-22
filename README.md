@@ -333,20 +333,31 @@ python fund.py article --inbox
 
 同一档位只提醒一次；信号消失后（比如又涨回去）会自动复位，下次重新触发再提醒。所以不会在熊市底部每天刷屏。
 
-在仓库 **Settings → Secrets and variables → Actions → New repository secret** 里配置**其中一种**即可：
+#### 最省事：GitHub Issue → GitHub 邮件 → QQ 邮箱（默认，不需要任何 Secret）
 
-| 方式 | 需要的 Secret | 说明 |
+不用注册第三方服务，也不用关注陌生公众号，只用你已有的 GitHub + QQ 邮箱：
+
+1. **确认 GitHub 账号绑定了 QQ 邮箱**：GitHub → **Settings → Emails**，添加并验证 QQ 邮箱，设为 Primary。
+2. **打开邮件通知**：GitHub → **Settings → Notifications → Email**，保持 Issues 的 “Participating, @mentions and custom” 开启（默认就是开的）。
+3. 等下一次 Action 运行（或手动 Run workflow）。它会在仓库里创建一个 issue **「指数星级提醒（自动）」**，把你设为 assignee 并 @你；以后每天的提醒都追加在同一个 issue 里，不会建一堆。
+4. GitHub 会发邮件到 `notifications@github.com` 对应的 QQ 邮箱。第一次可能在垃圾箱，把它加入白名单；然后在微信里开启 **QQ邮箱提醒**，就能从微信收到。
+
+如果 GitHub 邮件慢，也可以装 GitHub 手机 App，打开 Issues 推送，比邮件更快。
+
+#### 其他方式（需要额外配置）
+
+| 方式 | 需要的配置 | 说明 |
 |---|---|---|
-| Server酱（微信直推，推荐） | `SERVERCHAN_KEY` | sct.ftqq.com 微信扫码登录，复制 SendKey；关注“方糖”服务号即可收到微信消息 |
-| PushPlus（微信直推） | `PUSHPLUS_TOKEN` | pushplus.plus 微信登录复制 token |
-| 邮箱 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `MAIL_TO` | QQ 邮箱：`smtp.qq.com`、`465`、QQ号@qq.com、SMTP 授权码；在微信里开启 QQ 邮箱提醒即可当微信通知用 |
+| Server酱 | `SERVERCHAN_KEY` Secret | 微信直推最快，但要注册 sct.ftqq.com 并关注“方糖”服务号 |
+| PushPlus | `PUSHPLUS_TOKEN` Secret | 微信直推，同样要注册第三方 |
+| 邮箱 SMTP | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `MAIL_TO` | 不经过 GitHub，直接发 QQ 邮箱；需要 SMTP 授权码 |
 
-只配一种就行；同时配了多个时，优先 `SMTP_HOST`（邮件），其次 `PUSHPLUS_TOKEN`，最后 `SERVERCHAN_KEY`。想强制选某个，再加一个 `PUSH_PROVIDER` Secret，值为 `email` / `pushplus` / `serverchan`。
+默认走 GitHub Issue；想换方式，在仓库 **Settings → Secrets and variables → Actions → Variables** 加一个 `PUSH_PROVIDER`，值为 `serverchan` / `pushplus` / `email` / `github_issue`。
 
 本地想测试推送，可以临时设置环境变量后运行：
 
 ```bash
-python index_watch.py --push            # 立即推一次（不判重）
+python index_watch.py --push --daily         # 每天一次，15:00 后才会发
 python index_watch.py --push --signal-only   # 只在新信号时推
 ```
 
