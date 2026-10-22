@@ -225,7 +225,8 @@ python fund.py remove 000961
 只想手动看/手动推一次：
 
 ```bash
-python index_watch.py                 # 终端打印
+python index_watch.py                 # 终端打印（用本地缓存）
+python index_watch.py --refresh       # 先联网刷新估值，再打印
 python index_watch.py --json          # JSON
 python index_watch.py --push          # 立即推一次
 ```
@@ -328,7 +329,7 @@ schtasks /Create /TN "FundMonitorIntraday" /SC WEEKLY /D MON-FRI /ST 14:20 ^
 
 ```bash
 cd C:\Users\peng\Documents\fund-monitor
-python index_watch.py --html docs/index.html
+python index_watch.py --refresh --html docs/index.html
 git init
 git add .
 git commit -m "index star dashboard"
@@ -434,7 +435,7 @@ python cycle_backtest.py --latest --index market     # 全市场平均 PE/PB
 
 ### 9.3 20 万资金按规则跑完整牛熊
 
-`strategy_backtest.py` 用真实缓存数据，每轮熊市投入 20 万，按 3.4 的 T1/T2/T3 + S1/S2 + 保险规则逐日模拟：
+`strategy_backtest.py` 用真实缓存数据，每轮熊市投入 20 万，按 3.4 的 T1/T2/T3 + S1/S2 + 保险规则逐日模拟。大体积历史缓存未提交到仓库，新克隆先跑一次 `python index_watch.py --refresh` 生成：
 
 ```bash
 python strategy_backtest.py                 # 跑全部预设周期

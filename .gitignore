@@ -8,6 +8,10 @@ logs/
 reports/
 articles/
 data/cache/articles/
+# 大体积历史行情缓存，用 --refresh 重新生成
+data/cache/hs300_history.json
+data/cache/zz500_history.json
+data/cache/market_history.json
 
 # Python
 __pycache__/

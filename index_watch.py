@@ -63,8 +63,28 @@ def _row(key, name, weight_hs300=0.75):
     return row
 
 
-def collect(keys=None, weight_hs300=0.75):
+def refresh_cache(keys=None):
+    """联网刷新指数估值历史；失败时保留旧缓存，不中断日报。"""
+    for key in keys or ["hs300", "zz500", "market"]:
+        try:
+            n = cb.refresh_history(key)
+            print("已刷新 %s：%d 条" % (key, n), file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001
+            print("刷新 %s 失败：%s（继续用缓存）" % (key, exc), file=sys.stderr)
+
+
+def collect(keys=None, weight_hs300=0.75, refresh=False):
     wanted = set(keys or [k for k, _ in DEFAULT_KEYS])
+    if refresh:
+        needed = set()
+        for key in wanted:
+            if key == "zz800":
+                needed.update(["hs300", "zz500"])
+            elif key == "market":
+                needed.add("market")
+            else:
+                needed.add(key)
+        refresh_cache(sorted(needed))
     rows = []
     for key, name in DEFAULT_KEYS:
         if key not in wanted:
@@ -272,6 +292,8 @@ def main(argv=None):
                     choices=["all", "zz800", "zz500", "market"])
     ap.add_argument("--weight-hs300", type=float, default=0.75,
                     help="合成中证800时沪深300的市值权重，默认 0.75")
+    ap.add_argument("--refresh", action="store_true",
+                    help="先联网刷新指数估值历史（失败则继续用缓存）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--push", action="store_true",
                     help="通过 config.json 的 Server酱/PushPlus 推送")
@@ -281,7 +303,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     keys = None if args.index == "all" else [args.index]
-    rows = collect(keys, args.weight_hs300)
+    rows = collect(keys, args.weight_hs300, refresh=args.refresh)
 
     if args.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
