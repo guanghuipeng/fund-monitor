@@ -11,6 +11,9 @@
   4.8 星 = 估值分位 <=20% 且价格距 3 年高点 <= -26%
   全市场没有统一价格指数，所以全市场只算估值星级，作参考。
 
+买卖动作使用 v3 规则（见 v3_rule.py）：深度首笔 + 趋势加仓 +
+60%/63% 卖出 + 强趋势 12% 移动止盈 + 40% 浮盈保险。
+
 用法：
   python index_watch.py                     # 终端打印
   python index_watch.py --json              # JSON
@@ -26,6 +29,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
 import cycle_backtest as cb
+import v3_rule
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
@@ -33,7 +37,6 @@ ALERT_STATE_PATH = os.path.join(BASE, "data", "alert_state.json")
 PAGE_URL = os.environ.get("INDEX_PAGE_URL") or ""
 
 DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"), ("market", "全市场")]
-
 
 QUOTE_SECIDS = {"zz800": "1.000906", "zz500": "1.000905"}
 QUOTE_TENCENT = {"zz800": "sh000906", "zz500": "sh000905"}
@@ -168,6 +171,7 @@ def _apply_quote(row, key, quote, weight_hs300):
 
     row["chg_pct"] = quote["chg_pct"]
     row["quote_time"] = quote["time"]
+    row["quote_date"] = quote["date"].isoformat()
     if quote["date"] == s_date:
         # 官方数据已包含当天；只把中证800的合成点位换算成真实点位
         if row["star_px"]:
@@ -269,6 +273,7 @@ def _row(key, name, weight_hs300=0.75):
         row["price_gap"] = None
         row["val_gap"] = None
     _attach_trend(row, key, quote, weight_hs300)
+    v3_rule.attach(row, key, weight_hs300)
     return row
 
 
@@ -336,14 +341,7 @@ def markdown(rows, title_date=None):
     for r in rows:
         if not r["tradeable"]:
             continue
-        if r["pall"] >= 0.63:
-            action = "**卖出剩余 2/3**（≥63%%）"
-        elif r["pall"] >= 0.60:
-            action = "**卖出 1/3**（≥60%%）"
-        elif r["star"] >= 4.8:
-            action = "可买 1/3（≥4.8★）"
-        else:
-            action = "不买"
+        action = r.get("v3_action") or r.get("v3_current_action") or "等待"
         verdict_bits.append("%s **%.2f★** %s" % (r["name"], r["star"], action))
     if verdict_bits:
         lines.append("**结论**：%s。" % "；".join(verdict_bits))
@@ -381,10 +379,30 @@ def markdown(rows, title_date=None):
     for r in rows:
         lines.append("- **%s**：%.2f 星。%s。" % (r["name"], r["star"], distance_text(r)))
     lines.append("")
+    lines.append("### v3 规则（已启用）")
+    for r in rows:
+        if not r["tradeable"] or not r.get("v3_action"):
+            continue
+        lines.append("- **%s**：%s。%s" % (
+            r["name"], r["v3_action"], r.get("v3_detail") or ""))
+    lines.append("")
+    lines.append("### 现行规则对照")
+    for r in rows:
+        if not r["tradeable"]:
+            continue
+        lines.append("- **%s**：现行规则说“%s”；v3 说“%s”。" % (
+            r["name"], r.get("v3_current_action") or "不买",
+            r.get("v3_action") or "等待"))
+    lines.append("")
     lines.append("### 规则")
-    lines.append("- 买入：4.8 星买 1/3；价格再跌 10% 买 1/3；再跌 20% 买最后 1/3。")
-    lines.append("- 卖出：全历史分位 ≥60% 卖 1/3；≥63% 卖剩余 2/3。")
-    lines.append("- 保险：浮盈最高 ≥45% 后，从本轮高点回撤 10% 清仓（S1 前）。")
+    lines.append("- 买入：4.8★ 首笔按 1 年回撤加深：≤-60% 投 2/3，"
+                 "≤-40% 投 1/2，否则 1/3；剩余现金分给 T2/T3。")
+    lines.append("- 加仓：T2 较 T1 跌 10%，或 T1 一年回撤≤-40% 且 120 日线转上；"
+                 "T3 较 T1 跌 20%，或 250 日线转上。")
+    lines.append("- 卖出：全历史分位 ≥60% 卖 1/3；≥63% 卖剩余 2/3；"
+                 "若点位高于年线 30%，剩余改 12% 移动止盈。")
+    lines.append("- 保险：浮盈最高 ≥40% 后，从本轮高点回撤 10% 且年线向上，清仓；"
+                 "强趋势中不触发。")
     lines.append("")
     lines.append("数据：乐咕 PE/PB + 腾讯/东方财富行情；中证800 的 PE/PB 为 75% 沪深300 + "
                  "25% 中证500 合成，价格优先用中证800 实际点位。仅为估值记录，不构成投资建议。")
@@ -467,33 +485,39 @@ def html(rows, title_date=None):
         distance.append('<li><b>%s</b>：%.2f 星。%s。</li>' % (
             _esc(r["name"]), r["star"], _esc(distance_text(r))))
 
+    v3_items = []
+    for r in rows:
+        if not r["tradeable"] or not r.get("v3_action"):
+            continue
+        v3_items.append('<li><b>%s</b>：%s。%s</li>' % (
+            _esc(r["name"]), _esc(r["v3_action"]),
+            _esc(r.get("v3_detail") or "")))
+
     verdicts = []
     for r in rows:
         if not r["tradeable"]:
             continue
-        if r["pall"] >= 0.63:
-            cls, text = "sell", "卖出剩余 2/3（≥63%）"
-            sub = "估值分位 %.1f%%，进入第二档止盈区" % (r["pall"] * 100)
-        elif r["pall"] >= 0.60:
-            cls, text = "sell", "卖出 1/3（≥60%）"
-            sub = "估值分位 %.1f%%，进入第一档止盈区" % (r["pall"] * 100)
-        elif r["star"] >= 4.8:
-            cls, text = "buy", "可以买第一档（1/3）"
-            sub = "已同时满足估值和价格条件"
-        elif r["star"] >= 4.5:
-            cls, text = "watch", "接近买点，继续等"
-            sub = "还差一点，别提前满仓"
+        action = r.get("v3_action") or r.get("v3_current_action") or "等待"
+        if "清仓" in action or "卖出" in action:
+            cls = "sell"
+        elif "建仓" in action or "加第" in action:
+            cls = "buy"
+        elif ("持有" in action or "已卖" in action or "强趋势" in action
+              or "满仓" in action or "三笔已完成" in action
+              or "等分位" in action):
+            cls = "watch"
         else:
-            cls, text = "wait", "不买，继续等 4.8 星"
-            sub = "估值分位 %.1f%%（需 ≤20%%）· 价格 %.0f（需 ≤%.0f）" % (
-                r["pall"] * 100, r["px_display"], r["price_t1"])
+            cls = "wait"
+        sub = r.get("v3_detail") or ""
+        if r.get("v3_current_action"):
+            sub += " · 现行：%s" % r["v3_current_action"]
         if r.get("estimate"):
             sub += " · " + r["estimate_label"]
         verdicts.append(
             '<div class="verdict %s"><div class="v-name">%s</div>'
             '<div class="v-star">%.2f<span>★</span></div>'
             '<div class="v-text">%s</div><div class="v-sub">%s</div></div>' % (
-                cls, _esc(r["name"]), r["star"], text, _esc(sub)))
+                cls, _esc(r["name"]), r["star"], _esc(action), _esc(sub)))
 
     return """<!doctype html>
 <html lang="zh-CN">
@@ -591,13 +615,23 @@ h1{font-size:21px}
 <h2>距离 4.8 星买点</h2>
 <ul>%(distance)s</ul>
 </section>
+<section class="card">
+<h2>v3 规则（已启用）</h2>
+<ul>%(v3_items)s</ul>
+<p class="rule">v3 与现行规则的差别：首笔按 1 年回撤加深；T2/T3 增加趋势确认；
+保险改为 40%% 浮盈 + 年线向上过滤；强趋势中 63%% 不卖剩余 2/3，改用高点回撤 12%%。
+网页和推送现在都按 v3 给出动作，下面仍保留现行规则对照。</p>
+</section>
 <section class="card rule">
 <h2>怎么读</h2>
 <p>修正星级 = min(估值星级, 价格星级)，只看该指数自己的历史，<b>不是全市场星级</b>。
 4.8 星才是第一档买点：估值分位 ≤20%%，且价格距 3 年高点 ≤-26%%。</p>
-<p>买入：4.8 星买 1/3；价格再跌 10%% 买 1/3；再跌 20%% 买最后 1/3。<br>
-卖出：全历史分位 ≥60%% 卖 1/3；≥63%% 卖剩余 2/3。<br>
-保险：浮盈最高 ≥45%% 后，从本轮高点回撤 10%% 清仓（S1 前）。</p>
+<p>买入：4.8★ 首笔按 1 年回撤加深（≤-60%% 投 2/3，≤-40%% 投 1/2，否则 1/3），
+剩余现金分给 T2/T3。<br>
+加仓：T2 较 T1 跌 10%%，或 T1 一年回撤≤-40%% 且 120 日线转上；
+T3 较 T1 跌 20%%，或 250 日线转上。<br>
+卖出：全历史分位 ≥60%% 卖 1/3；≥63%% 卖剩余 2/3；若点位高于年线 30%%，剩余改 12%% 移动止盈。<br>
+保险：浮盈最高 ≥40%% 后，从本轮高点回撤 10%% 且年线向上，清仓；强趋势中不触发。</p>
 <p>全市场没有统一价格指数，所以只算估值星级，作参考。</p>
 </section>
 <p class="footer">数据：乐咕 PE/PB + 腾讯/东方财富行情；中证800 的 PE/PB 为 75%% 沪深300 + 25%% 中证500 合成，
@@ -616,6 +650,7 @@ h1{font-size:21px}
         "trs": "".join(trs),
         "trends": "".join(trend_rows),
         "distance": "".join(distance),
+        "v3_items": "".join(v3_items),
     }
 
 
@@ -628,27 +663,30 @@ def load_config():
 
 
 def _alert_signals(rows):
-    """当天触发的买/卖档位。信号消失后会自动从状态里清掉，下次重新触发再提醒。"""
+    """当天 v3 实际触发的买/卖动作。信号消失后自动从状态里清掉。"""
     out = {}
     for r in rows:
         key = r.get("key")
-        if key == "market" or r.get("star") is None:
+        code = r.get("v3_today_code")
+        if key == "market" or not code:
             continue
-        star = r["star"]
-        pall = r.get("pall") or 0.0
-        px = r.get("px_display")
-        t1 = r.get("price_t1")
-        if star >= 4.8:
-            out[key + ":buy48"] = "4.8星建仓"
-        if t1 and px:
-            if px <= t1 * 0.80:
-                out[key + ":buy80"] = "价格≤T1×0.80（第三笔）"
-            elif px <= t1 * 0.90:
-                out[key + ":buy90"] = "价格≤T1×0.90（第二笔）"
-        if pall >= 0.63:
-            out[key + ":sell63"] = "分位≥63%（卖剩余）"
-        elif pall >= 0.60:
-            out[key + ":sell60"] = "分位≥60%（卖1/3）"
+        label = r.get("v3_today_action") or code
+        if code == "T1":
+            out[key + ":buy48"] = label
+        elif code == "T2":
+            out[key + ":buyT2"] = label
+        elif code == "T3":
+            out[key + ":buyT3"] = label
+        elif code == "S1":
+            out[key + ":sell60"] = label
+        elif code == "S2":
+            out[key + ":sell63"] = label
+        elif code == "保险":
+            out[key + ":insurance"] = label
+        elif code == "TR":
+            out[key + ":trail"] = label
+        elif code == "HOLD":
+            out[key + ":hold"] = label
     return out
 
 
@@ -688,15 +726,7 @@ def _brief_items(rows):
     for r in rows:
         if r.get("key") == "market":
             continue
-        pall = r.get("pall") or 0.0
-        if pall >= 0.63:
-            action = "卖出剩余 2/3"
-        elif pall >= 0.60:
-            action = "卖出 1/3"
-        elif (r.get("star") or 0) >= 4.8:
-            action = "可买 1/3"
-        else:
-            action = "不买，等待"
+        action = r.get("v3_short") or r.get("v3_action") or "等待"
         items.append((r, action))
     return items
 
@@ -719,12 +749,18 @@ def push_brief(rows, fresh=None):
         vtxt = "估值分位 %s（%s）" % (
             _fmt_pct(pall), "卖点≥60%" if pall >= 0.60 else "买点≤20%")
         price = "点位 %s" % _fmt_px(r.get("px_display"))
-        if r.get("price_t1"):
+        if r.get("v3_t1_px") is not None:
+            price += "（本轮T1 %s）" % _fmt_px(
+                v3_rule._display_px(r, r["v3_t1_px"]))
+        elif r.get("price_t1"):
             price += "（T1 %s）" % _fmt_px(r["price_t1"])
         est = "｜%s" % r["estimate_label"] if r.get("estimate_label") else ""
-        lines.append("- **%s %.2f★**｜%s｜今日 %s｜%s｜%s%s" % (
+        current = r.get("v3_current_action")
+        cand = ("｜现行：%s" % current
+                if current and current != action else "")
+        lines.append("- **%s %.2f★**｜%s｜今日 %s｜%s｜%s%s%s" % (
             r["name"], r["star"], action, _fmt_pct(r.get("chg_pct"), 2, sign=True),
-            vtxt, price, est))
+            vtxt, price, est, cand))
     if PAGE_URL:
         lines += ["", "完整走势图：[打开网页](%s)" % PAGE_URL]
     return "\n".join(lines)
@@ -742,12 +778,19 @@ def push_brief_html(rows, fresh=None):
         vtxt = "估值分位 %s（%s）" % (
             _fmt_pct(pall), "卖点≥60%" if pall >= 0.60 else "买点≤20%")
         price = "点位 %s" % _fmt_px(r.get("px_display"))
-        if r.get("price_t1"):
+        if r.get("v3_t1_px") is not None:
+            price += "（本轮T1 %s）" % _fmt_px(
+                v3_rule._display_px(r, r["v3_t1_px"]))
+        elif r.get("price_t1"):
             price += "（T1 %s）" % _fmt_px(r["price_t1"])
         est = "｜%s" % r["estimate_label"] if r.get("estimate_label") else ""
-        parts.append("<li><b>%s %.2f★</b>｜%s｜今日 %s｜%s｜%s%s</li>" % (
+        current = r.get("v3_current_action")
+        cand = ("｜现行：%s" % current
+                if current and current != action else "")
+        parts.append("<li><b>%s %.2f★</b>｜%s｜今日 %s｜%s｜%s%s%s</li>" % (
             htmlmod.escape(r["name"]), r["star"], action,
-            _fmt_pct(r.get("chg_pct"), 2, sign=True), vtxt, price, est))
+            _fmt_pct(r.get("chg_pct"), 2, sign=True), vtxt, price, est,
+            htmlmod.escape(cand)))
     parts.append("</ul>")
     if PAGE_URL:
         parts.append('<p><a href="%s">打开网页看完整走势</a></p>' % PAGE_URL)
