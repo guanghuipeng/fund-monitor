@@ -18,10 +18,12 @@
   python index_watch.py --html docs/index.html   # 生成 GitHub Pages 静态页
 """
 import argparse
+import bisect
 import json
 import os
 import sys
-from datetime import date, datetime
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
 
 import cycle_backtest as cb
 
@@ -29,6 +31,208 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 
 DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"), ("market", "全市场")]
+
+
+QUOTE_SECIDS = {"zz800": "1.000906", "zz500": "1.000905"}
+QUOTE_TENCENT = {"zz800": "sh000906", "zz500": "sh000905"}
+CN_TZ = timezone(timedelta(hours=8))
+
+
+def _scaled(value, digits=2):
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    if x != x:
+        return None
+    return x / (10.0 ** int(digits))
+
+
+def _quote_tencent(key):
+    """腾讯行情，字段简单且盘中/收盘都稳定，作为主数据源。"""
+    code = QUOTE_TENCENT.get(key)
+    if not code:
+        return None
+    url = "https://qt.gtimg.cn/q=%s" % code
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://gu.qq.com/",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            text = resp.read().decode("gbk", "ignore")
+    except Exception:  # noqa: BLE001
+        return None
+    body = text.split('"', 2)
+    if len(body) < 2:
+        return None
+    parts = body[1].split("~")
+    if len(parts) < 33:
+        return None
+    try:
+        price = float(parts[3])
+        prev = float(parts[4])
+    except ValueError:
+        return None
+    if price <= 0 or prev <= 0:
+        return None
+    try:
+        chg_pct = float(parts[32]) / 100.0
+    except (TypeError, ValueError):
+        chg_pct = price / prev - 1.0
+    try:
+        qdt = datetime.strptime(parts[30], "%Y%m%d%H%M%S").replace(tzinfo=CN_TZ)
+    except (TypeError, ValueError):
+        qdt = datetime.now(CN_TZ)
+    return {"price": price, "prev": prev, "chg_pct": chg_pct,
+            "date": qdt.date(), "time": qdt.strftime("%m-%d %H:%M"),
+            "name": parts[1] or ""}
+
+
+def _quote_eastmoney(key):
+    """东方财富行情，作为备用源。"""
+    secid = QUOTE_SECIDS.get(key)
+    if not secid:
+        return None
+    url = ("https://push2.eastmoney.com/api/qt/stock/get?secid=%s"
+           "&fields=f43,f57,f58,f59,f60,f86,f170" % secid)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://quote.eastmoney.com/",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            obj = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    d = obj.get("data") or {}
+    digits = int(d.get("f59") or 2)
+    price = _scaled(d.get("f43"), digits)
+    prev = _scaled(d.get("f60"), digits)
+    if price is None or not prev:
+        return None
+    try:
+        chg_pct = float(d.get("f170")) / 10000.0
+    except (TypeError, ValueError):
+        chg_pct = price / prev - 1.0
+    try:
+        qdt = datetime.fromtimestamp(int(d.get("f86")), tz=CN_TZ)
+    except (TypeError, ValueError, OSError):
+        qdt = datetime.now(CN_TZ)
+    return {"price": price, "prev": prev, "chg_pct": chg_pct,
+            "date": qdt.date(), "time": qdt.strftime("%m-%d %H:%M"),
+            "name": d.get("f58") or ""}
+
+
+def fetch_quote(key):
+    """实时/收盘行情：腾讯优先，失败再试东方财富；都失败返回 None。"""
+    return _quote_tencent(key) or _quote_eastmoney(key)
+
+
+def _valuation_percentile(pe, pb, key, weight_hs300):
+    rows = cb._load_raw_rows(key, weight_hs300)
+    pes = sorted(float(r["pe_ttm"]) for r in rows)
+    pbs = sorted(float(r["pb"]) for r in rows)
+    return (0.6 * bisect.bisect_right(pes, pe) / float(len(pes))
+            + 0.4 * bisect.bisect_right(pbs, pb) / float(len(pbs)))
+
+
+def _zone(pall, star):
+    if pall >= 0.63:
+        return "第二档止盈区（≥63%）"
+    if pall >= 0.60:
+        return "第一档止盈区（≥60%）"
+    if star >= 4.8:
+        return "建仓区（≥4.8星）"
+    if star >= 4.5:
+        return "观察区（接近4.8星）"
+    return "等待区（新资金不买）"
+
+
+def _apply_quote(row, key, quote, weight_hs300):
+    """用实时行情更新今日涨跌；必要时按价格变动估算星级。"""
+    row["chg_pct"] = None
+    row["quote_time"] = None
+    row["estimate"] = False
+    row["estimate_label"] = ""
+    row["point_note"] = "合成点位" if key == "zz800" else ""
+    row["px_display"] = row["star_px"]
+    row["high_display"] = row["star_high"]
+    if not quote:
+        return
+    s_date = date.fromisoformat(row["data_date"])
+    if quote["date"] < s_date:
+        return
+
+    row["chg_pct"] = quote["chg_pct"]
+    row["quote_time"] = quote["time"]
+    if quote["date"] == s_date:
+        # 官方数据已包含当天；只把中证800的合成点位换算成真实点位
+        if row["star_px"]:
+            scale = quote["price"] / row["star_px"]
+            row["px_display"] = quote["price"]
+            row["high_display"] = (row["star_high"] or 0) * scale
+            row["point_note"] = ""
+        return
+
+    # 行情比估值缓存新：按价格变动同比例缩放 PE/PB，估算今天的星级
+    chg = quote["chg_pct"]
+    pe = row["pe"] * (1.0 + chg)
+    pb = row["pb"] * (1.0 + chg)
+    pall = _valuation_percentile(pe, pb, key, weight_hs300)
+    live_level = row["star_px"] * (1.0 + chg) if row["star_px"] else None
+    if live_level is None:
+        return
+    high = max(row["star_high"] or live_level, live_level)
+    dd = live_level / high - 1.0
+    val_star = cb.valuation_star(pall)
+    p_star = cb.price_star(dd)
+    star = min(val_star, p_star)
+    scale = quote["price"] / live_level
+    row.update({
+        "pe": pe, "pb": pb, "pall": pall,
+        "val_star": val_star, "price_star": p_star, "star": star,
+        "star_dd": dd, "star_high": high, "star_px": live_level,
+        "px_display": quote["price"], "high_display": high * scale,
+        "point_note": "", "estimate": True, "zone": _zone(pall, star),
+        "estimate_label": ("收盘估算" if quote["time"][-5:] >= "15:00"
+                           else "盘中估算"),
+    })
+
+
+def _period_stats(series, days):
+    if len(series) < 2:
+        return None
+    end_d, end_v = series[-1]
+    dates_only = [d for d, _ in series]
+    i = bisect.bisect_left(dates_only, end_d - timedelta(days=days))
+    if i >= len(series) - 1:
+        i = max(0, len(series) - 2)
+    start_v = series[i][1]
+    if start_v <= 0:
+        return None
+    pts = series[i:]
+    if len(pts) > 60:
+        step = len(pts) / 60.0
+        pts = [pts[int(j * step)] for j in range(60)]
+        pts[-1] = (end_d, end_v)
+    return {"chg": end_v / start_v - 1.0,
+            "start": series[i][0].isoformat(),
+            "points": [round(v, 4) for _, v in pts]}
+
+
+def _attach_trend(row, key, quote, weight_hs300):
+    if key == "market":
+        row["trend"] = {}
+        return
+    nav, dates = cb.load_index_nav(key, weight_hs300)
+    if not dates:
+        row["trend"] = {}
+        return
+    series = [(d, nav[d]) for d in dates]
+    if quote and quote["date"] > dates[-1]:
+        series.append((quote["date"], series[-1][1] * (1.0 + quote["chg_pct"])))
+    row["trend"] = {str(d): _period_stats(series, d) for d in (7, 30, 365)}
 
 
 def _row(key, name, weight_hs300=0.75):
@@ -52,14 +256,17 @@ def _row(key, name, weight_hs300=0.75):
         "market_star": s["market_star"],
         "tradeable": key != "market",
     }
-    if key != "market" and s["star_high"]:
-        row["price_t1"] = s["star_high"] * 0.74  # price_star 4.8 的位置
-        row["price_gap"] = s["star_px"] / row["price_t1"] - 1.0
-        row["val_gap"] = s["pall"] - 0.20
+    quote = fetch_quote(key) if key != "market" else None
+    _apply_quote(row, key, quote, weight_hs300)
+    if key != "market" and row.get("high_display"):
+        row["price_t1"] = row["high_display"] * 0.74  # price_star 4.8 的位置
+        row["price_gap"] = row["px_display"] / row["price_t1"] - 1.0
+        row["val_gap"] = row["pall"] - 0.20
     else:
         row["price_t1"] = None
         row["price_gap"] = None
         row["val_gap"] = None
+    _attach_trend(row, key, quote, weight_hs300)
     return row
 
 
@@ -109,14 +316,15 @@ def _fmt_num(x, digits=2):
 def distance_text(row):
     if not row["tradeable"]:
         return "全市场只作参考，不可直接买"
+    suffix = ("（%s）" % row["estimate_label"]) if row.get("estimate") else ""
     if row["star"] >= 4.8:
-        return "已到 4.8 星买点"
+        return "已到 4.8 星买点" + suffix
     parts = []
     parts.append("估值分位需 ≤20%%（现在 %.1f%%）" % (row["pall"] * 100))
     if row["price_t1"] is not None:
         parts.append("价格需 ≤%.0f（现在 %.0f，%+.1f%%）" % (
-            row["price_t1"], row["star_px"], row["price_gap"] * 100))
-    return "；".join(parts)
+            row["price_t1"], row["px_display"], row["price_gap"] * 100))
+    return "；".join(parts) + suffix
 
 
 def markdown(rows, title_date=None):
@@ -126,16 +334,29 @@ def markdown(rows, title_date=None):
     for r in rows:
         if not r["tradeable"]:
             continue
-        verdict_bits.append("%s **%.2f★** %s" % (
-            r["name"], r["star"], "可买 1/3" if r["star"] >= 4.8 else "不买"))
+        if r["pall"] >= 0.63:
+            action = "**卖出剩余 2/3**（≥63%%）"
+        elif r["pall"] >= 0.60:
+            action = "**卖出 1/3**（≥60%%）"
+        elif r["star"] >= 4.8:
+            action = "可买 1/3（≥4.8★）"
+        else:
+            action = "不买"
+        verdict_bits.append("%s **%.2f★** %s" % (r["name"], r["star"], action))
     if verdict_bits:
         lines.append("**结论**：%s。" % "；".join(verdict_bits))
         lines.append("")
-    lines.append("| 指数 | 修正星级 | 估值星级 | 价格星级 | 全历史分位 | 3年回撤 | PE | PB | 状态 |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---|")
+    if any(r.get("estimate") for r in rows):
+        lines.append("> 今日涨跌为实时/收盘行情；盘中或收盘估算按价格变动缩放 PE/PB，"
+                     "晚间官方数据更新后以官方值为准。")
+        lines.append("")
+
+    lines.append("| 指数 | 今日 | 修正星级 | 估值星级 | 价格星级 | 全历史分位 | 3年回撤 | PE | PB | 状态 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for r in rows:
-        lines.append("| %s | **%.2f** | %.2f | %s | %.1f%% | %s | %.2f | %.2f | %s |" % (
-            r["name"], r["star"], r["val_star"],
+        today = _fmt_pct(r.get("chg_pct"), 2, sign=True)
+        lines.append("| %s | %s | **%.2f** | %.2f | %s | %.1f%% | %s | %.2f | %.2f | %s |" % (
+            r["name"], today, r["star"], r["val_star"],
             "--" if r["price_star"] is None else "%.2f" % r["price_star"],
             r["pall"] * 100,
             "--" if r["star_dd"] is None else "%.1f%%" % (r["star_dd"] * 100),
@@ -143,6 +364,16 @@ def markdown(rows, title_date=None):
     lines.append("")
     lines.append("**怎么读**：修正星级 = min(估值星级, 价格星级)，只看该指数自己的历史，"
                  "不是全市场星级。4.8 星才是第一档买点；全市场那一行只作参考。")
+    lines.append("")
+    lines.append("### 走势")
+    lines.append("| 指数 | 近1周 | 近1月 | 近1年 |")
+    lines.append("|---|---:|---:|---:|")
+    for r in rows:
+        cells = []
+        for key in ("7", "30", "365"):
+            t = (r.get("trend") or {}).get(key)
+            cells.append(_fmt_pct(t["chg"], 1, sign=True) if t else "--")
+        lines.append("| %s | %s | %s | %s |" % (r["name"], cells[0], cells[1], cells[2]))
     lines.append("")
     lines.append("### 距离 4.8 星买点")
     for r in rows:
@@ -153,8 +384,8 @@ def markdown(rows, title_date=None):
     lines.append("- 卖出：全历史分位 ≥60% 卖 1/3；≥63% 卖剩余 2/3。")
     lines.append("- 保险：浮盈最高 ≥45% 后，从本轮高点回撤 10% 清仓（S1 前）。")
     lines.append("")
-    lines.append("数据：乐咕 PE/PB + 指数点位（中证800 为 75% 沪深300 + 25% 中证500 合成）。"
-                 "仅为估值记录，不构成投资建议。")
+    lines.append("数据：乐咕 PE/PB + 腾讯/东方财富行情；中证800 的 PE/PB 为 75% 沪深300 + "
+                 "25% 中证500 合成，价格优先用中证800 实际点位。仅为估值记录，不构成投资建议。")
     return "\n".join(lines)
 
 
@@ -163,24 +394,71 @@ def _esc(s):
     return html.escape("" if s is None else str(s))
 
 
+def _spark(points, up, width=112, height=32):
+    vals = [float(v) for v in (points or []) if v is not None]
+    if len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    span = hi - lo or 1.0
+    pts = []
+    for i, v in enumerate(vals):
+        x = i * width / float(len(vals) - 1)
+        y = height - 2 - (v - lo) / span * (height - 4)
+        pts.append("%.1f,%.1f" % (x, y))
+    cls = "up" if up else "down"
+    return ('<svg class="trend-spark %s" viewBox="0 0 %d %d" '
+            'preserveAspectRatio="none"><polyline points="%s" fill="none" '
+            'stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" '
+            'stroke-linecap="round"/></svg>') % (cls, width, height, " ".join(pts))
+
+
 def html(rows, title_date=None):
     d = title_date or date.today().isoformat()
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
     data_dates = sorted({r["data_date"] for r in rows})
     data_date_text = data_dates[-1] if data_dates else d
+    quote_times = sorted({r["quote_time"] for r in rows if r.get("quote_time")})
+    quote_text = (" · 行情 %s" % quote_times[-1]) if quote_times else ""
+    estimate_text = (" · 含盘中/收盘估算，晚间以官方数据为准"
+                     if any(r.get("estimate") for r in rows) else "")
 
     trs = []
+    trend_rows = []
     for r in rows:
         cls = "market" if not r["tradeable"] else ""
         price_star = "--" if r["price_star"] is None else "%.2f" % r["price_star"]
         dd = "--" if r["star_dd"] is None else "%.1f%%" % (r["star_dd"] * 100)
+        chg = r.get("chg_pct")
+        if chg is None:
+            today_td = '<td class="chg">--</td>'
+            trend_today = '<td class="trend-cell">--</td>'
+        else:
+            c = "up" if chg >= 0 else "down"
+            today_td = '<td class="chg %s">%+.2f%%</td>' % (c, chg * 100)
+            trend_today = ('<td class="trend-cell"><span class="chg %s">'
+                           '%+.2f%%</span></td>' % (c, chg * 100))
         trs.append(
-            '<tr class="%s"><td class="name">%s</td>'
+            '<tr class="%s"><td class="name">%s</td>%s'
             '<td class="star">%.2f</td><td>%.2f</td><td>%s</td>'
             '<td>%.1f%%</td><td>%s</td><td>%.2f</td><td>%.2f</td>'
             '<td class="zone">%s</td></tr>' % (
-                cls, _esc(r["name"]), r["star"], r["val_star"], price_star,
-                r["pall"] * 100, dd, r["pe"], r["pb"], _esc(r["zone"])))
+                cls, _esc(r["name"]), today_td, r["star"], r["val_star"],
+                price_star, r["pall"] * 100, dd, r["pe"], r["pb"],
+                _esc(r["zone"])))
+        if r["tradeable"]:
+            cells = []
+            for key in ("7", "30", "365"):
+                t = (r.get("trend") or {}).get(key)
+                if not t:
+                    cells.append('<td class="trend-cell">--</td>')
+                    continue
+                up = t["chg"] >= 0
+                cells.append(
+                    '<td class="trend-cell">%s<span class="chg %s">%+.1f%%</span></td>' % (
+                        _spark(t["points"], up), "up" if up else "down",
+                        t["chg"] * 100))
+            trend_rows.append('<tr><td class="name">%s</td>%s%s</tr>' % (
+                _esc(r["name"]), trend_today, "".join(cells)))
 
     distance = []
     for r in rows:
@@ -191,7 +469,13 @@ def html(rows, title_date=None):
     for r in rows:
         if not r["tradeable"]:
             continue
-        if r["star"] >= 4.8:
+        if r["pall"] >= 0.63:
+            cls, text = "sell", "卖出剩余 2/3（≥63%）"
+            sub = "估值分位 %.1f%%，进入第二档止盈区" % (r["pall"] * 100)
+        elif r["pall"] >= 0.60:
+            cls, text = "sell", "卖出 1/3（≥60%）"
+            sub = "估值分位 %.1f%%，进入第一档止盈区" % (r["pall"] * 100)
+        elif r["star"] >= 4.8:
             cls, text = "buy", "可以买第一档（1/3）"
             sub = "已同时满足估值和价格条件"
         elif r["star"] >= 4.5:
@@ -200,7 +484,9 @@ def html(rows, title_date=None):
         else:
             cls, text = "wait", "不买，继续等 4.8 星"
             sub = "估值分位 %.1f%%（需 ≤20%%）· 价格 %.0f（需 ≤%.0f）" % (
-                r["pall"] * 100, r["star_px"], r["price_t1"])
+                r["pall"] * 100, r["px_display"], r["price_t1"])
+        if r.get("estimate"):
+            sub += " · " + r["estimate_label"]
         verdicts.append(
             '<div class="verdict %s"><div class="v-name">%s</div>'
             '<div class="v-star">%.2f<span>★</span></div>'
@@ -230,6 +516,7 @@ border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 .verdict.buy{border-left-color:var(--green)}
 .verdict.watch{border-left-color:var(--amber)}
 .verdict.wait{border-left-color:#9aa7b6}
+.verdict.sell{border-left-color:var(--red)}
 .v-name{font-size:13px;color:var(--muted)}
 .v-star{font-size:32px;font-weight:700;line-height:1.15;color:var(--text)}
 .v-star span{font-size:16px;color:var(--accent);margin-left:2px}
@@ -237,6 +524,7 @@ border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 .verdict.buy .v-text{color:var(--green)}
 .verdict.watch .v-text{color:var(--amber)}
 .verdict.wait .v-text{color:#475467}
+.verdict.sell .v-text{color:var(--red)}
 .v-sub{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
 padding:18px;margin:0 0 18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
@@ -250,6 +538,18 @@ td.star{font-size:18px;font-weight:700;color:var(--accent)}
 tr.market td{color:var(--muted)}
 tr.market td.star{color:var(--muted)}
 td.zone{text-align:left;white-space:normal}
+td.chg{font-weight:700}
+td.chg.up,.trend-table .chg.up{color:#c94a4a}
+td.chg.down,.trend-table .chg.down{color:#15803d}
+.trend-table{width:100%%;border-collapse:collapse;font-size:13px}
+.trend-table th,.trend-table td{padding:8px 6px;border-bottom:1px solid var(--line);
+text-align:right;white-space:nowrap}
+.trend-table th:first-child,.trend-table td:first-child{text-align:left}
+.trend-table th{color:var(--muted);font-weight:600;font-size:12px}
+.trend-spark{width:112px;height:32px;display:block;margin:0 0 2px auto}
+.trend-spark.up{color:#c94a4a}
+.trend-spark.down{color:#15803d}
+.trend-table .chg{font-size:12px;font-weight:700}
 h2{font-size:16px;margin:0 0 10px}
 ul{margin:0;padding-left:20px}
 li{margin:6px 0}
@@ -260,6 +560,8 @@ main{padding:18px 10px 36px}
 .card{padding:12px;overflow-x:auto}
 table{font-size:12px}
 th,td{padding:7px 5px}
+.trend-table{font-size:11px}
+.trend-spark{width:82px;height:26px}
 h1{font-size:21px}
 }
 </style>
@@ -267,13 +569,20 @@ h1{font-size:21px}
 <body>
 <main>
 <h1>指数星级日报</h1>
-<p class="meta">数据截至 %(data_date)s · 生成于 %(generated)s · 中证800 / 中证500 / 全市场</p>
+<p class="meta">估值数据截至 %(data_date)s%(quote_text)s%(estimate_text)s · 生成于 %(generated)s · 中证800 / 中证500 / 全市场</p>
 <section class="verdicts">%(verdicts)s</section>
 <section class="card">
 <table>
-<thead><tr><th>指数</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
+<thead><tr><th>指数</th><th>今日</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
 <th>全历史分位</th><th>3年回撤</th><th>PE</th><th>PB</th><th>状态</th></tr></thead>
 <tbody>%(trs)s</tbody>
+</table>
+</section>
+<section class="card">
+<h2>走势</h2>
+<table class="trend-table">
+<thead><tr><th>指数</th><th>今日</th><th>近1周</th><th>近1月</th><th>近1年</th></tr></thead>
+<tbody>%(trends)s</tbody>
 </table>
 </section>
 <section class="card">
@@ -289,7 +598,8 @@ h1{font-size:21px}
 保险：浮盈最高 ≥45%% 后，从本轮高点回撤 10%% 清仓（S1 前）。</p>
 <p>全市场没有统一价格指数，所以只算估值星级，作参考。</p>
 </section>
-<p class="footer">数据：乐咕 PE/PB + 指数点位；中证800 为 75%% 沪深300 + 25%% 中证500 合成。
+<p class="footer">数据：乐咕 PE/PB + 腾讯/东方财富行情；中证800 的 PE/PB 为 75%% 沪深300 + 25%% 中证500 合成，
+价格优先用中证800 实际点位。盘中/收盘估算按价格变动缩放 PE/PB，晚间官方数据更新后以官方值为准。
 仅为估值记录，不构成投资建议。</p>
 </main>
 </body>
@@ -297,9 +607,12 @@ h1{font-size:21px}
 """ % {
         "d": _esc(d),
         "data_date": _esc(data_date_text),
+        "quote_text": _esc(quote_text),
+        "estimate_text": _esc(estimate_text),
         "generated": _esc(generated),
         "verdicts": "".join(verdicts),
         "trs": "".join(trs),
+        "trends": "".join(trend_rows),
         "distance": "".join(distance),
     }
 

@@ -289,12 +289,29 @@ python fund.py article --inbox
 
 ## 8. 每天自动更新：GitHub Actions（不用本地电脑）
 
-仓库自带 `.github/workflows/update-index.yml`。每个工作日**北京时间 21:35**，GitHub 的服务器会自动：
+仓库自带 `.github/workflows/update-index.yml`。每个工作日运行三次（北京时间）：
+
+| 时间 | UTC cron | 用途 |
+|---|---|---|
+| 11:35 | `35 3 * * 1-5` | 午盘看一眼：上午跌到买点，下午还能操作 |
+| 15:05 | `5 7 * * 1-5` | 收盘后立刻出当日结果 |
+| 21:35 | `35 13 * * 1-5` | 官方估值更新后复核 |
+
+每次 GitHub 的服务器会自动：
 
 1. 检出仓库；
 2. 运行 `python index_watch.py --refresh --html docs/index.html`；
-3. 如果页面有变化，自动提交并推回 `main`；
-4. GitHub Pages 随后更新，你直接打开网页看星级和买入结论。
+3. 从东方财富取中证800/中证500 最新点位，按当日涨跌推算盘中 PE/PB、回撤和星级；
+4. 如果页面有变化，自动提交并推回 `main`，GitHub Pages 随后更新。
+
+页面内容：
+
+- 每个指数一行的**今日涨跌幅**（红涨绿跌）；
+- 修正星级、估值星级、价格星级、全历史分位、3 年回撤、PE、PB；
+- **近 1 周 / 近 1 月 / 近 1 年**涨跌幅和小走势图；
+- 直接写明“可买 1/3”或“卖出 1/3 / 卖出剩余 2/3”，不买时给出距离 4.8 星的估值和价格差。
+
+15:00 前运行显示“盘中估算”，15:00 后显示“收盘估算”；晚间的官方数据才是最终值，页面上会标明。
 
 不需要自己的服务器，也不需要本地定时任务。`data/cache/` 里的历史估值作为基线提交在仓库里，每天刷新后的数据用 Actions 缓存保存，不会把仓库撑大。
 
@@ -302,7 +319,7 @@ python fund.py article --inbox
 
 1. 仓库 **Settings → Actions → General → Workflow permissions**，选 **Read and write permissions**，保存。否则 Action 没有权限把 `docs/index.html` 推回去。
 2. 仓库 **Actions** 标签 → 左侧 **Update index star page** → **Run workflow**，先手动跑一次确认。
-3. 之后每个工作日自动运行。GitHub 的定时任务可能延迟几分钟到二十分钟，不会精确到 21:35。
+3. 之后每个工作日自动运行。GitHub 的定时任务可能延迟几分钟到二十分钟：15:05 那次实际可能 15:10–15:30 才出页面。
 
 也可以随时在 Actions 页面点 **Run workflow** 手动刷新。
 

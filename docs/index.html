@@ -21,6 +21,7 @@ border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 .verdict.buy{border-left-color:var(--green)}
 .verdict.watch{border-left-color:var(--amber)}
 .verdict.wait{border-left-color:#9aa7b6}
+.verdict.sell{border-left-color:var(--red)}
 .v-name{font-size:13px;color:var(--muted)}
 .v-star{font-size:32px;font-weight:700;line-height:1.15;color:var(--text)}
 .v-star span{font-size:16px;color:var(--accent);margin-left:2px}
@@ -28,6 +29,7 @@ border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 .verdict.buy .v-text{color:var(--green)}
 .verdict.watch .v-text{color:var(--amber)}
 .verdict.wait .v-text{color:#475467}
+.verdict.sell .v-text{color:var(--red)}
 .v-sub{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
 padding:18px;margin:0 0 18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
@@ -41,6 +43,18 @@ td.star{font-size:18px;font-weight:700;color:var(--accent)}
 tr.market td{color:var(--muted)}
 tr.market td.star{color:var(--muted)}
 td.zone{text-align:left;white-space:normal}
+td.chg{font-weight:700}
+td.chg.up,.trend-table .chg.up{color:#c94a4a}
+td.chg.down,.trend-table .chg.down{color:#15803d}
+.trend-table{width:100%;border-collapse:collapse;font-size:13px}
+.trend-table th,.trend-table td{padding:8px 6px;border-bottom:1px solid var(--line);
+text-align:right;white-space:nowrap}
+.trend-table th:first-child,.trend-table td:first-child{text-align:left}
+.trend-table th{color:var(--muted);font-weight:600;font-size:12px}
+.trend-spark{width:112px;height:32px;display:block;margin:0 0 2px auto}
+.trend-spark.up{color:#c94a4a}
+.trend-spark.down{color:#15803d}
+.trend-table .chg{font-size:12px;font-weight:700}
 h2{font-size:16px;margin:0 0 10px}
 ul{margin:0;padding-left:20px}
 li{margin:6px 0}
@@ -51,6 +65,8 @@ main{padding:18px 10px 36px}
 .card{padding:12px;overflow-x:auto}
 table{font-size:12px}
 th,td{padding:7px 5px}
+.trend-table{font-size:11px}
+.trend-spark{width:82px;height:26px}
 h1{font-size:21px}
 }
 </style>
@@ -58,18 +74,25 @@ h1{font-size:21px}
 <body>
 <main>
 <h1>指数星级日报</h1>
-<p class="meta">数据截至 2026-10-21 · 生成于 2026-10-22 05:51 · 中证800 / 中证500 / 全市场</p>
-<section class="verdicts"><div class="verdict wait"><div class="v-name">中证800</div><div class="v-star">4.09<span>★</span></div><div class="v-text">不买，继续等 4.8 星</div><div class="v-sub">估值分位 37.7%（需 ≤20%）· 价格 2189（需 ≤2018）</div></div><div class="verdict wait"><div class="v-name">中证500</div><div class="v-star">3.95<span>★</span></div><div class="v-text">不买，继续等 4.8 星</div><div class="v-sub">估值分位 41.1%（需 ≤20%）· 价格 6841（需 ≤6683）</div></div></section>
+<p class="meta">估值数据截至 2026-10-21 · 行情 10-22 15:44 · 含盘中/收盘估算，晚间以官方数据为准 · 生成于 2026-10-22 15:44 · 中证800 / 中证500 / 全市场</p>
+<section class="verdicts"><div class="verdict wait"><div class="v-name">中证800</div><div class="v-star">4.25<span>★</span></div><div class="v-text">不买，继续等 4.8 星</div><div class="v-sub">估值分位 33.7%（需 ≤20%）· 价格 4482（需 ≤4220） · 收盘估算</div></div><div class="verdict wait"><div class="v-name">中证500</div><div class="v-star">4.10<span>★</span></div><div class="v-text">不买，继续等 4.8 星</div><div class="v-sub">估值分位 37.4%（需 ≤20%）· 价格 6655（需 ≤6683） · 收盘估算</div></div></section>
 <section class="card">
 <table>
-<thead><tr><th>指数</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
+<thead><tr><th>指数</th><th>今日</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
 <th>全历史分位</th><th>3年回撤</th><th>PE</th><th>PB</th><th>状态</th></tr></thead>
-<tbody><tr class=""><td class="name">中证800</td><td class="star">4.09</td><td>4.09</td><td>4.49</td><td>37.7%</td><td>-19.7%</td><td>13.90</td><td>1.49</td><td class="zone">等待区（新资金不买）</td></tr><tr class=""><td class="name">中证500</td><td class="star">3.95</td><td>3.95</td><td>4.71</td><td>41.1%</td><td>-24.3%</td><td>24.09</td><td>2.14</td><td class="zone">等待区（新资金不买）</td></tr><tr class="market"><td class="name">全市场</td><td class="star">3.92</td><td>3.92</td><td>--</td><td>41.5%</td><td>--</td><td>35.57</td><td>2.54</td><td class="zone">参考（不可直接买）</td></tr></tbody>
+<tbody><tr class=""><td class="name">中证800</td><td class="chg down">-2.07%</td><td class="star">4.25</td><td>4.25</td><td>4.57</td><td>33.7%</td><td>-21.4%</td><td>13.61</td><td>1.46</td><td class="zone">等待区（新资金不买）</td></tr><tr class=""><td class="name">中证500</td><td class="chg down">-2.71%</td><td class="star">4.10</td><td>4.10</td><td>4.82</td><td>37.4%</td><td>-26.3%</td><td>23.44</td><td>2.08</td><td class="zone">等待区（新资金不买）</td></tr><tr class="market"><td class="name">全市场</td><td class="chg">--</td><td class="star">3.92</td><td>3.92</td><td>--</td><td>41.5%</td><td>--</td><td>35.57</td><td>2.54</td><td class="zone">参考（不可直接买）</td></tr></tbody>
+</table>
+</section>
+<section class="card">
+<h2>走势</h2>
+<table class="trend-table">
+<thead><tr><th>指数</th><th>今日</th><th>近1周</th><th>近1月</th><th>近1年</th></tr></thead>
+<tbody><tr><td class="name">中证800</td><td class="trend-cell"><span class="chg down">-2.07%</span></td><td class="trend-cell"><svg class="trend-spark down" viewBox="0 0 112 32" preserveAspectRatio="none"><polyline points="0.0,4.5 22.4,3.6 44.8,2.0 67.2,4.3 89.6,11.1 112.0,30.0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="chg down">-2.8%</span></td><td class="trend-cell"><svg class="trend-spark down" viewBox="0 0 112 32" preserveAspectRatio="none"><polyline points="0.0,2.0 7.0,3.3 14.0,7.5 21.0,12.9 28.0,12.4 35.0,12.0 42.0,15.2 49.0,14.9 56.0,17.2 63.0,17.7 70.0,20.7 77.0,24.2 84.0,24.0 91.0,23.7 98.0,24.2 105.0,25.7 112.0,30.0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="chg down">-12.2%</span></td><td class="trend-cell"><svg class="trend-spark down" viewBox="0 0 112 32" preserveAspectRatio="none"><polyline points="0.0,17.3 1.9,14.5 3.8,15.3 5.7,14.8 7.6,14.2 9.5,17.4 11.4,20.0 13.3,17.7 15.2,17.6 17.1,18.3 19.0,17.5 20.9,16.2 22.8,15.1 24.7,10.6 26.6,8.9 28.5,10.1 30.4,9.7 32.3,9.0 34.2,11.3 36.1,10.0 38.0,10.0 39.9,8.5 41.8,11.0 43.7,10.5 45.6,12.1 47.5,17.7 49.4,16.7 51.3,18.6 53.2,13.0 55.1,10.2 56.9,8.1 58.8,9.6 60.7,4.9 62.6,2.1 64.5,6.1 66.4,4.4 68.3,6.3 70.2,6.1 72.1,10.3 74.0,5.9 75.9,3.4 77.8,2.0 79.7,6.2 81.6,8.0 83.5,11.7 85.4,12.2 87.3,16.3 89.2,16.9 91.1,11.7 93.0,12.3 94.9,14.6 96.8,15.6 98.7,13.2 100.6,15.9 102.5,15.6 104.4,17.1 106.3,15.3 108.2,20.8 110.1,23.3 112.0,30.0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="chg down">-10.6%</span></td></tr><tr><td class="name">中证500</td><td class="trend-cell"><span class="chg down">-2.71%</span></td><td class="trend-cell"><svg class="trend-spark down" viewBox="0 0 112 32" preserveAspectRatio="none"><polyline points="0.0,12.9 22.4,12.3 44.8,8.1 67.2,2.0 89.6,2.1 112.0,30.0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="chg down">-1.7%</span></td><td class="trend-cell"><svg class="trend-spark down" viewBox="0 0 112 32" preserveAspectRatio="none"><polyline points="0.0,2.0 7.0,2.9 14.0,6.9 21.0,12.2 28.0,11.3 35.0,11.4 42.0,15.8 49.0,15.8 56.0,19.6 63.0,19.7 70.0,22.2 77.0,27.3 84.0,27.2 91.0,26.5 98.0,25.6 105.0,25.6 112.0,30.0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="chg down">-15.0%</span></td><td class="trend-cell"><svg class="trend-spark down" viewBox="0 0 112 32" preserveAspectRatio="none"><polyline points="0.0,24.4 1.9,21.9 3.8,22.0 5.7,22.1 7.6,21.8 9.5,24.5 11.4,26.5 13.3,24.7 15.2,24.8 17.1,25.0 19.0,24.3 20.9,22.9 22.8,20.9 24.7,16.3 26.6,11.2 28.5,11.4 30.4,9.6 32.3,7.1 34.2,10.8 36.1,10.5 38.0,9.5 39.9,6.4 41.8,9.9 43.7,9.9 45.6,13.0 47.5,18.9 49.4,17.1 51.3,19.6 53.2,14.5 55.1,12.0 56.9,9.7 58.8,11.7 60.7,5.9 62.6,3.3 64.5,6.8 66.4,5.9 68.3,9.9 70.2,9.9 72.1,13.4 74.0,8.2 75.9,4.2 77.8,2.0 79.7,6.5 81.6,8.2 83.5,14.7 85.4,17.1 87.3,20.7 89.2,21.1 91.1,14.4 93.0,14.5 94.9,16.7 96.8,17.6 98.7,14.7 100.6,18.2 102.5,17.5 104.4,17.9 106.3,16.2 108.2,20.8 110.1,24.8 112.0,30.0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="chg down">-6.6%</span></td></tr></tbody>
 </table>
 </section>
 <section class="card">
 <h2>距离 4.8 星买点</h2>
-<ul><li><b>中证800</b>：4.09 星。估值分位需 ≤20%（现在 37.7%）；价格需 ≤2018（现在 2189，+8.5%）。</li><li><b>中证500</b>：3.95 星。估值分位需 ≤20%（现在 41.1%）；价格需 ≤6683（现在 6841，+2.4%）。</li><li><b>全市场</b>：3.92 星。全市场只作参考，不可直接买。</li></ul>
+<ul><li><b>中证800</b>：4.25 星。估值分位需 ≤20%（现在 33.7%）；价格需 ≤4220（现在 4482，+6.2%）（收盘估算）。</li><li><b>中证500</b>：4.10 星。估值分位需 ≤20%（现在 37.4%）；价格需 ≤6683（现在 6655，-0.4%）（收盘估算）。</li><li><b>全市场</b>：3.92 星。全市场只作参考，不可直接买。</li></ul>
 </section>
 <section class="card rule">
 <h2>怎么读</h2>
@@ -80,7 +103,8 @@ h1{font-size:21px}
 保险：浮盈最高 ≥45% 后，从本轮高点回撤 10% 清仓（S1 前）。</p>
 <p>全市场没有统一价格指数，所以只算估值星级，作参考。</p>
 </section>
-<p class="footer">数据：乐咕 PE/PB + 指数点位；中证800 为 75% 沪深300 + 25% 中证500 合成。
+<p class="footer">数据：乐咕 PE/PB + 腾讯/东方财富行情；中证800 的 PE/PB 为 75% 沪深300 + 25% 中证500 合成，
+价格优先用中证800 实际点位。盘中/收盘估算按价格变动缩放 PE/PB，晚间官方数据更新后以官方值为准。
 仅为估值记录，不构成投资建议。</p>
 </main>
 </body>

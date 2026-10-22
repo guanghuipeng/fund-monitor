@@ -2,7 +2,12 @@ name: Update index star page
 
 on:
   schedule:
-    # GitHub Actions 用 UTC；13:35 UTC = 北京时间 21:35，周一到周五
+    # GitHub Actions 用 UTC，北京时间 = UTC+8，周一到周五
+    # 11:35 午盘（03:35 UTC）：看上午行情，下午可操作
+    - cron: "35 3 * * 1-5"
+    # 15:05 收盘（07:05 UTC）：收盘后立刻看当日结果
+    - cron: "5 7 * * 1-5"
+    # 21:35 晚间（13:35 UTC）：官方估值数据更新后复核
     - cron: "35 13 * * 1-5"
   workflow_dispatch:
 
