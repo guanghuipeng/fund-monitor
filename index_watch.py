@@ -30,6 +30,8 @@ import cycle_backtest as cb
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 ALERT_STATE_PATH = os.path.join(BASE, "data", "alert_state.json")
+PAGE_URL = (os.environ.get("INDEX_PAGE_URL")
+            or "https://guanghuipeng.github.io/fund-monitor/")
 
 DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"), ("market", "全市场")]
 
@@ -678,6 +680,85 @@ def _push_configured(config):
                     and os.environ.get("GITHUB_REPOSITORY")))
 
 
+def _fmt_pct(x, signed=False):
+    if x is None:
+        return "--"
+    return ("%+.2f%%" if signed else "%.1f%%") % (x * 100)
+
+
+def _fmt_px(x):
+    return "--" if x is None else "%.0f" % x
+
+
+def _brief_items(rows):
+    items = []
+    for r in rows:
+        if r.get("key") == "market":
+            continue
+        pall = r.get("pall") or 0.0
+        if pall >= 0.63:
+            action = "卖出剩余 2/3"
+        elif pall >= 0.60:
+            action = "卖出 1/3"
+        elif (r.get("star") or 0) >= 4.8:
+            action = "可买 1/3"
+        else:
+            action = "不买，等待"
+        items.append((r, action))
+    return items
+
+
+def _fresh_desc(fresh):
+    names = {"zz800": "中证800", "zz500": "中证500"}
+    return "；".join("%s %s" % (names.get(k.split(":")[0], k), v)
+                    for k, v in sorted(fresh.items()))
+
+
+def push_brief(rows, fresh=None):
+    """推送只保留关键信息，详细走势让用户点链接看网页。"""
+    today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
+    lines = ["**指数星级｜%s**" % today]
+    if fresh:
+        lines.append("新增信号：%s" % _fresh_desc(fresh))
+    lines.append("")
+    for r, action in _brief_items(rows):
+        pall = r.get("pall") or 0.0
+        vtxt = "估值分位 %s（%s）" % (
+            _fmt_pct(pall), "卖点≥60%" if pall >= 0.60 else "买点≤20%")
+        price = "点位 %s" % _fmt_px(r.get("px_display"))
+        if r.get("price_t1"):
+            price += "（T1 %s）" % _fmt_px(r["price_t1"])
+        est = "｜%s" % r["estimate_label"] if r.get("estimate_label") else ""
+        lines.append("- **%s %.2f★**｜%s｜今日 %s｜%s｜%s%s" % (
+            r["name"], r["star"], action, _fmt_pct(r.get("chg_pct"), True),
+            vtxt, price, est))
+    lines += ["", "完整走势图：[打开网页](%s)" % PAGE_URL]
+    return "\n".join(lines)
+
+
+def push_brief_html(rows, fresh=None):
+    import html as htmlmod
+    today = datetime.now(CN_TZ).strftime("%Y-%m-%d")
+    parts = ["<h3>指数星级｜%s</h3>" % today]
+    if fresh:
+        parts.append("<p><b>新增信号</b>：%s</p>" % htmlmod.escape(_fresh_desc(fresh)))
+    parts.append("<ul>")
+    for r, action in _brief_items(rows):
+        pall = r.get("pall") or 0.0
+        vtxt = "估值分位 %s（%s）" % (
+            _fmt_pct(pall), "卖点≥60%" if pall >= 0.60 else "买点≤20%")
+        price = "点位 %s" % _fmt_px(r.get("px_display"))
+        if r.get("price_t1"):
+            price += "（T1 %s）" % _fmt_px(r["price_t1"])
+        est = "｜%s" % r["estimate_label"] if r.get("estimate_label") else ""
+        parts.append("<li><b>%s %.2f★</b>｜%s｜今日 %s｜%s｜%s%s</li>" % (
+            htmlmod.escape(r["name"]), r["star"], action,
+            _fmt_pct(r.get("chg_pct"), True), vtxt, price, est))
+    parts.append("</ul>")
+    parts.append('<p><a href="%s">打开网页看完整走势</a></p>' % PAGE_URL)
+    return "".join(parts)
+
+
 def push(rows, signal_only=False, daily=False):
     import datasource as ds
     config = load_config()
@@ -697,20 +778,18 @@ def push(rows, signal_only=False, daily=False):
         print("今天没有新的买卖信号，跳过推送。")
         return 0
 
-    names = {"zz800": "中证800", "zz500": "中证500"}
     if fresh:
-        desc = "；".join("%s %s" % (names.get(k.split(":")[0], k), v)
-                        for k, v in sorted(fresh.items()))
+        desc = _fresh_desc(fresh)
         title = "指数信号｜%s %s" % (now.strftime("%m-%d"), desc)
-        content = "**本次新增信号**：%s\n\n%s" % (desc, markdown(rows))
     else:
         row800 = next((r for r in rows if r["key"] == "zz800"), None)
         title = "指数日报｜%s %s" % (
             now.strftime("%m-%d"),
             ("中证800 %.2f★" % row800["star"]) if row800 else "星级更新")
-        content = markdown(rows)
 
-    ok, msg = ds.send_push(config, title, content, html_body=html(rows))
+    content = push_brief(rows, fresh)
+    ok, msg = ds.send_push(config, title, content,
+                           html_body=push_brief_html(rows, fresh))
     if ok:
         _save_alert_state(current)
         print("推送成功：%s" % title)

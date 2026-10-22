@@ -66,6 +66,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
+          INDEX_PAGE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
           # 18:05 那次固定发一条日报；其它时间只在出现新信号时发
           PUSH_ARGS: "${{ (github.event_name == 'workflow_dispatch' || github.event.schedule == '5 10 * * 1-5') && '--daily --signal-only' || '--signal-only' }}"
         run: python index_watch.py --push $PUSH_ARGS
