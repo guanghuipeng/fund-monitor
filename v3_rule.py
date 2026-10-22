@@ -158,7 +158,8 @@ def attach(row, key, weight_hs300):
                  "v3_trail_line", "v3_strong", "v3_position",
                  "v3_today_action", "v3_today_code",
                  "v3_current_action", "v3_first_frac",
-                 "v3_insurance_ready", "v3_crash_filter"):
+                 "v3_insurance_ready", "v3_crash_filter",
+                 "v3_s1_done", "v3_trail_on"):
         row[name] = None
     row["v3_action"] = ""
     row["v3_short"] = ""
@@ -285,6 +286,8 @@ def attach(row, key, weight_hs300):
                         if cyc.get("start_cash") else None),
         "v3_first_frac": first_frac,
         "v3_insurance_ready": insurance_ready,
+        "v3_s1_done": s1_done,
+        "v3_trail_on": trail_on,
     })
 
     if today_trade:

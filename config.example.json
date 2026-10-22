@@ -19,6 +19,11 @@
     "article_max_age_days": 7,
     "index_watch_push": false
   },
+  "allocation": {
+    "capital": 200000,
+    "zz500": 0.5,
+    "zz800": 0.5
+  },
   "thresholds": {
     "buy": {
       "low_pct": 0.2,

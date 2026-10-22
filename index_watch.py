@@ -350,6 +350,129 @@ def _fmt_num(x, digits=2):
     return ("%." + str(digits) + "f") % x
 
 
+# 本轮资金分配：默认 20 万，中证500 / 中证800 各一半，两个子账户各自
+# 按自己的 4.8★ 和 T1/T2/T3 时间分批，互不等待、互不挪用。
+DEFAULT_CAPITAL = 200000.0
+DEFAULT_ALLOCATION = (("zz500", 0.5), ("zz800", 0.5))
+ALLOC_NAMES = {"zz500": "中证500", "zz800": "中证800", "hs300": "沪深300"}
+
+
+def _alloc_name(key):
+    return ALLOC_NAMES.get(key, key)
+
+
+def _wan(x):
+    if x is None:
+        return "--"
+    return "%.1f万" % (x / 10000.0)
+
+
+def _allocation_plan():
+    """返回 (总资金, [(指数, 子账户金额, 权重)])；config 可覆盖。"""
+    config = load_config()
+    raw = config.get("allocation") or {}
+    try:
+        total = float(raw.get("capital", DEFAULT_CAPITAL))
+    except (TypeError, ValueError):
+        total = DEFAULT_CAPITAL
+    if total <= 0:
+        total = DEFAULT_CAPITAL
+    weights = []
+    for key in ("zz500", "zz800", "hs300"):
+        try:
+            w = float(raw.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            w = 0.0
+        if w > 0:
+            weights.append((key, w))
+    if not weights:
+        weights = list(DEFAULT_ALLOCATION)
+    norm = sum(w for _, w in weights)
+    return total, [(k, total * w / norm, w / norm) for k, w in weights]
+
+
+def _sleeve_plan(row, amount):
+    """一个独立子账户的金额计划（元）。"""
+    frac = row.get("v3_first_frac")
+    if frac is None or frac <= 0 or frac > 1:
+        frac = 1.0 / 3.0
+    stage = int(row.get("v3_stage") or 0)
+    t1 = amount * frac
+    add = amount * (1.0 - frac) / 2.0
+    code = row.get("v3_today_code")
+    today = ""
+    if code == "T1":
+        today = "今日T1买 %s" % _wan(t1)
+    elif code in ("T2", "T3"):
+        today = "今日%s加 %s" % (code, _wan(add))
+    elif code == "S1":
+        today = "今日卖 1/3"
+    elif code == "S2":
+        today = "今日卖剩余 2/3"
+    elif code in ("保险", "TR"):
+        today = "今日清仓"
+    if stage <= 0:
+        status = row.get("v3_action") or "空仓等待 4.8★"
+        if row.get("star") is not None and row["star"] >= 4.8:
+            nxt = "T1 买 %s（首笔 %.0f%%），T2/T3 各约 %s" % (
+                _wan(t1), frac * 100, _wan(add))
+        else:
+            nxt = "T1 约 3.3/5.0/6.7万（按触发时 1 年回撤分档）"
+        return {"status": status, "today": today, "invested": 0.0,
+                "stage": 0, "next": nxt}
+    pos = row.get("v3_position")
+    if pos is None:
+        pos = frac + (stage - 1) * (1.0 - frac) / 2.0
+    invested = amount * pos
+    if row.get("v3_s1_done"):
+        nxt = ("移动止盈中" if row.get("v3_trail_on")
+               else "已卖 1/3，剩余等 ≥63%")
+    elif stage >= 3:
+        nxt = "等分位 ≥60% 卖 1/3"
+    elif stage == 1:
+        nxt = "T2 约 %s" % _wan(add)
+    else:
+        nxt = "T3 约 %s" % _wan(add)
+    return {"status": row.get("v3_action") or "持有", "today": today,
+            "invested": invested, "stage": stage, "next": nxt}
+
+
+def _sleeve_brief(row, amount):
+    """推送里一行子账户说明，尽量短。"""
+    frac = row.get("v3_first_frac")
+    if frac is None or frac <= 0 or frac > 1:
+        frac = 1.0 / 3.0
+    code = row.get("v3_today_code")
+    if code == "T1":
+        buy = amount * frac
+        return "子账户%s：今日T1买%s（首笔%.0f%%），剩%s" % (
+            _wan(amount), _wan(buy), frac * 100, _wan(amount - buy))
+    if code in ("T2", "T3"):
+        return "子账户%s：今日%s加%s" % (
+            _wan(amount), code, _wan(amount * (1.0 - frac) / 2.0))
+    if code == "S1":
+        return "子账户%s：今日卖1/3" % _wan(amount)
+    if code == "S2":
+        return "子账户%s：今日卖剩余2/3" % _wan(amount)
+    if code in ("保险", "TR"):
+        return "子账户%s：今日清仓" % _wan(amount)
+    plan = _sleeve_plan(row, amount)
+    if not row.get("v3_stage"):
+        return "子账户%s：空仓，等4.8★" % _wan(amount)
+    return "子账户%s：累计买入%s（%d/3笔），%s" % (
+        _wan(amount), _wan(plan["invested"]), plan["stage"], plan["next"])
+
+
+def _allocation_text():
+    total, plan = _allocation_plan()
+    return ("本轮总资金 %s：%s；每个子账户按自己的 4.8★ 和 "
+            "T1/T2/T3 信号独立建仓，互不等待、互不挪用。" % (
+                _wan(total),
+                " + ".join("%s %s（%.0f%%）" % (
+                    _alloc_name(k), _wan(a), w * 100)
+                    for k, a, w in plan)))
+
+
 def distance_text(row):
     if not row["tradeable"]:
         return "全市场只作参考，不可直接买"
@@ -413,6 +536,27 @@ def markdown(rows, title_date=None):
     lines.append("### 距离 4.8 星买点")
     for r in rows:
         lines.append("- **%s**：%.2f 星。%s。" % (r["name"], r["star"], distance_text(r)))
+    lines.append("")
+    _, alloc_plan = _allocation_plan()
+    lines.append("### 本轮资金分配（各自分批）")
+    lines.append(_allocation_text())
+    lines.append("")
+    for key, amount, weight in alloc_plan:
+        r = next((x for x in rows if x.get("key") == key), None)
+        if r is None:
+            continue
+        p = _sleeve_plan(r, amount)
+        status = p["status"] + ("；" + p["today"] if p["today"] else "")
+        if p["stage"]:
+            lines.append("- **%s（%s，%.0f%%）**：%s；累计买入 %s（%d/3 笔）；"
+                         "下一笔：%s。" % (
+                             _alloc_name(key), _wan(amount), weight * 100,
+                             status, _wan(p["invested"]), p["stage"],
+                             p["next"]))
+        else:
+            lines.append("- **%s（%s，%.0f%%）**：%s；下一笔：%s。" % (
+                _alloc_name(key), _wan(amount), weight * 100,
+                status, p["next"]))
     lines.append("")
     lines.append("### v3.2 规则（已启用）")
     for r in rows:
@@ -559,6 +703,39 @@ def html(rows, title_date=None):
             '<div class="v-text">%s</div><div class="v-sub">%s</div></div>' % (
                 cls, _esc(r["name"]), r["star"], _esc(action), _esc(sub)))
 
+    alloc_total, alloc_plan = _allocation_plan()
+    alloc_rows = []
+    for key, amount, weight in alloc_plan:
+        r = next((x for x in rows if x.get("key") == key), None)
+        if r is None:
+            continue
+        p = _sleeve_plan(r, amount)
+        status = p["status"] + ("；" + p["today"] if p["today"] else "")
+        invested = ("%s（%d/3）" % (_wan(p["invested"]), p["stage"])
+                    if p["stage"] else "0")
+        alloc_rows.append(
+            '<tr><td class="name">%s</td><td>%s（%.0f%%）</td>'
+            '<td>%s</td><td>%s</td><td>%s</td></tr>' % (
+                _esc(_alloc_name(key)), _wan(amount), weight * 100,
+                _esc(status), invested, _esc(p["next"])))
+    alloc_card = ""
+    if alloc_rows:
+        alloc_desc = " + ".join("%s %s（%.0f%%）" % (
+            _alloc_name(k), _wan(a), w * 100) for k, a, w in alloc_plan)
+        alloc_card = (
+            '<section class="card">'
+            '<h2>本轮资金分配（各自分批）</h2>'
+            '<p class="rule">本轮总资金 <b>%s</b>：%s。每个子账户按自己的 '
+            '4.8★ 和 T1/T2/T3 信号独立建仓，互不等待、互不挪用。</p>'
+            '<table class="alloc-table"><thead><tr><th>指数</th><th>子账户</th>'
+            '<th>当前动作</th><th>累计买入</th><th>下一笔</th></tr></thead>'
+            '<tbody>%s</tbody></table>'
+            '<p class="rule">回测口径（2007-01 至 2026-10，20 万，含 1.5%% 活期）：'
+            '期末 162.2 万，年化 11.17%%，最大回撤 -21.6%%。'
+            '金额按设定资金计算，实盘以子账户当前市值为准。</p>'
+            '</section>'
+        ) % (_esc(_wan(alloc_total)), _esc(alloc_desc), "".join(alloc_rows))
+
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -604,6 +781,8 @@ td.star{font-size:18px;font-weight:700;color:var(--accent)}
 tr.market td{color:var(--muted)}
 tr.market td.star{color:var(--muted)}
 td.zone{text-align:left;white-space:normal}
+.alloc-table td{white-space:normal}
+.alloc-table td:first-child{white-space:nowrap}
 td.chg{font-weight:700}
 td.chg.up,.trend-table .chg.up{color:#c94a4a}
 td.chg.down,.trend-table .chg.down{color:#15803d}
@@ -637,6 +816,7 @@ h1{font-size:21px}
 <h1>指数星级日报</h1>
 <p class="meta">估值数据截至 %(data_date)s%(quote_text)s%(estimate_text)s · 生成于 %(generated)s · 中证800 / 中证500 / 沪深300 / 全市场</p>
 <section class="verdicts">%(verdicts)s</section>
+%(alloc_card)s
 <section class="card">
 <table>
 <thead><tr><th>指数</th><th>今日</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
@@ -694,6 +874,7 @@ T3 较 T1 跌 20%%，或 250 日线转上。<br>
         "estimate_text": _esc(estimate_text),
         "generated": _esc(generated),
         "verdicts": "".join(verdicts),
+        "alloc_card": alloc_card,
         "trs": "".join(trs),
         "trends": "".join(trend_rows),
         "distance": "".join(distance),
@@ -790,8 +971,13 @@ def push_brief(rows, fresh=None):
     lines = ["**指数星级｜%s**" % today]
     if fresh:
         lines.append("新增信号：%s" % _fresh_desc(fresh))
+    lines.append("**资金分配**：" + _allocation_text())
     lines.append("")
+    alloc = {k: amt for k, amt, _ in _allocation_plan()[1]}
     for r, action in _brief_items(rows):
+        sleeve = ""
+        if r.get("key") in alloc:
+            sleeve = "｜" + _sleeve_brief(r, alloc[r["key"]])
         pall = r.get("pall") or 0.0
         vtxt = "估值分位 %s（%s）" % (
             _fmt_pct(pall), "卖点≥60%" if pall >= 0.60 else "买点≤20%")
@@ -805,8 +991,9 @@ def push_brief(rows, fresh=None):
         current = r.get("v3_current_action")
         cand = ("｜现行：%s" % current
                 if current and current != action else "")
-        lines.append("- **%s %.2f★**｜%s｜今日 %s｜%s｜%s%s%s" % (
-            r["name"], r["star"], action, _fmt_pct(r.get("chg_pct"), 2, sign=True),
+        lines.append("- **%s %.2f★**｜%s%s｜今日 %s｜%s｜%s%s%s" % (
+            r["name"], r["star"], action, sleeve,
+            _fmt_pct(r.get("chg_pct"), 2, sign=True),
             vtxt, price, est, cand))
     if PAGE_URL:
         lines += ["", "完整走势图：[打开网页](%s)" % PAGE_URL]
@@ -819,8 +1006,13 @@ def push_brief_html(rows, fresh=None):
     parts = ["<h3>指数星级｜%s</h3>" % today]
     if fresh:
         parts.append("<p><b>新增信号</b>：%s</p>" % htmlmod.escape(_fresh_desc(fresh)))
+    parts.append("<p><b>资金分配</b>：%s</p>" % htmlmod.escape(_allocation_text()))
     parts.append("<ul>")
+    alloc = {k: amt for k, amt, _ in _allocation_plan()[1]}
     for r, action in _brief_items(rows):
+        sleeve = ""
+        if r.get("key") in alloc:
+            sleeve = "｜" + _sleeve_brief(r, alloc[r["key"]])
         pall = r.get("pall") or 0.0
         vtxt = "估值分位 %s（%s）" % (
             _fmt_pct(pall), "卖点≥60%" if pall >= 0.60 else "买点≤20%")
@@ -834,8 +1026,9 @@ def push_brief_html(rows, fresh=None):
         current = r.get("v3_current_action")
         cand = ("｜现行：%s" % current
                 if current and current != action else "")
-        parts.append("<li><b>%s %.2f★</b>｜%s｜今日 %s｜%s｜%s%s%s</li>" % (
+        parts.append("<li><b>%s %.2f★</b>｜%s%s｜今日 %s｜%s｜%s%s%s</li>" % (
             htmlmod.escape(r["name"]), r["star"], action,
+            htmlmod.escape(sleeve),
             _fmt_pct(r.get("chg_pct"), 2, sign=True), vtxt, price, est,
             htmlmod.escape(cand)))
     parts.append("</ul>")

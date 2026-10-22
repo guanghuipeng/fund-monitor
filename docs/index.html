@@ -43,6 +43,8 @@ td.star{font-size:18px;font-weight:700;color:var(--accent)}
 tr.market td{color:var(--muted)}
 tr.market td.star{color:var(--muted)}
 td.zone{text-align:left;white-space:normal}
+.alloc-table td{white-space:normal}
+.alloc-table td:first-child{white-space:nowrap}
 td.chg{font-weight:700}
 td.chg.up,.trend-table .chg.up{color:#c94a4a}
 td.chg.down,.trend-table .chg.down{color:#15803d}
@@ -74,8 +76,9 @@ h1{font-size:21px}
 <body>
 <main>
 <h1>指数星级日报</h1>
-<p class="meta">估值数据截至 2026-10-21 · 行情 10-22 16:14 · 含盘中/收盘估算，晚间以官方数据为准 · 生成于 2026-10-22 22:00 · 中证800 / 中证500 / 沪深300 / 全市场</p>
+<p class="meta">估值数据截至 2026-10-21 · 行情 10-22 16:14 · 含盘中/收盘估算，晚间以官方数据为准 · 生成于 2026-10-22 22:47 · 中证800 / 中证500 / 沪深300 / 全市场</p>
 <section class="verdicts"><div class="verdict wait"><div class="v-name">中证800</div><div class="v-star">4.36<span>★</span></div><div class="v-text">空仓等待 4.8★</div><div class="v-sub">成分估值星级 4.36，需 ≥4.8；价格 4482，需 ≤4220（还需跌 6.2%） · 现行：不买 · 收盘估算</div></div><div class="verdict wait"><div class="v-name">中证500</div><div class="v-star">4.10<span>★</span></div><div class="v-text">空仓等待 4.8★</div><div class="v-sub">估值分位 37.4%，需 ≤20%；价格 6655，已低于 4.8★ 门槛 6683 · 现行：不买 · 收盘估算</div></div><div class="verdict wait"><div class="v-name">沪深300</div><div class="v-star">4.44<span>★</span></div><div class="v-text">空仓等待 4.8★</div><div class="v-sub">估值分位 28.9%，需 ≤20%；价格 4036，需 ≤3744（还需跌 7.8%） · 现行：不买 · 收盘估算</div></div></section>
+<section class="card"><h2>本轮资金分配（各自分批）</h2><p class="rule">本轮总资金 <b>20.0万</b>：中证500 10.0万（50%） + 中证800 10.0万（50%）。每个子账户按自己的 4.8★ 和 T1/T2/T3 信号独立建仓，互不等待、互不挪用。</p><table class="alloc-table"><thead><tr><th>指数</th><th>子账户</th><th>当前动作</th><th>累计买入</th><th>下一笔</th></tr></thead><tbody><tr><td class="name">中证500</td><td>10.0万（50%）</td><td>空仓等待 4.8★</td><td>0</td><td>T1 约 3.3/5.0/6.7万（按触发时 1 年回撤分档）</td></tr><tr><td class="name">中证800</td><td>10.0万（50%）</td><td>空仓等待 4.8★</td><td>0</td><td>T1 约 3.3/5.0/6.7万（按触发时 1 年回撤分档）</td></tr></tbody></table><p class="rule">回测口径（2007-01 至 2026-10，20 万，含 1.5% 活期）：期末 162.2 万，年化 11.17%，最大回撤 -21.6%。金额按设定资金计算，实盘以子账户当前市值为准。</p></section>
 <section class="card">
 <table>
 <thead><tr><th>指数</th><th>今日</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
