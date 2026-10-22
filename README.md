@@ -1,11 +1,11 @@
 # 基金监控与止盈提醒（fund-monitor）
 
-一个**本机运行、零第三方依赖**的基金监控工具。每个交易日抓取基金净值、指数估值和评级，按规则判断：
+一个**零第三方依赖**的基金监控工具，可本机运行，也可用 GitHub Actions 全自动运行。每个交易日抓取基金净值、指数估值和评级，按规则判断：
 
 - **低估** → 提醒分批买入；
 - **高估** → 提醒分批减仓；
 - **从高估区峰值回撤达到阈值** → 提醒卖出剩余仓位（回撤止盈，不要求你猜最高点）；
-- 生成一个自包含的 HTML 面板，并把触发信号推到微信（Server酱 / PushPlus）。
+- 生成一个自包含的 HTML 面板，并把触发信号推到 GitHub Issue / 邮箱（也可选 Server酱 / PushPlus）。
 
 > 只提醒，不自动交易，不接券商账户。输出不构成投资建议。
 
@@ -41,10 +41,10 @@
 
 ## 2. 快速开始
 
-环境：Windows + Python 3.9（本机路径 `D:\IDE\Python39\python.exe`），无需安装任何包。
+环境：Python 3.9+（Windows / macOS / Linux 均可），无需安装任何第三方包。
 
 ```bash
-cd C:\Users\peng\Documents\fund-monitor
+cd fund-monitor
 
 python fund.py init --demo        # 生成配置 + 3 只演示基金
 python fund.py check --dry-run    # 抓数据、算信号、不推送
@@ -177,7 +177,7 @@ python fund.py remove 000961
 - `index_code` 可手动指定蛋卷代码（`SZ399997`、`SH000300`、`HKHSTECH` 等），优先级最高。
 - `weekly_summary_weekday` 用 ISO 星期：1=周一 … 5=周五。
 - `index_watch_push=true`：即使当天没有基金信号，也推一份“中证800 / 中证500 / 全市场 星级日报”；有信号时星级表会自动附在信号推送后面。
-- `network.proxy` 默认空（直连国内数据源）。只有你的网络必须走代理时才填 `http://127.0.0.1:7993`。
+- `network.proxy` 默认空（直连国内数据源）。只有你的网络必须走代理时才填，例如 `http://127.0.0.1:7890`（按你的代理软件实际端口修改）。
 
 ## 5. 微信推送
 
@@ -366,29 +366,22 @@ python index_watch.py --push --signal-only   # 只在新信号时推
 
 ### 8.1 开启 GitHub Pages
 
-1. 在 GitHub 新建**公开**仓库 `guanghuipeng/fund-monitor`（免费账号的 Pages 只支持公开仓库）。
-2. 本机推送（仓库已经初始化并提交好，`.gitignore` 已排除 `config.json`、`data/state.json`、日志、报告等个人数据）：
+1. 在 GitHub 新建**公开**仓库 `<你的GitHub用户名>/fund-monitor`（免费账号的 Pages 只支持公开仓库）。
+2. 推送代码（`.gitignore` 已排除 `config.json`、`data/state.json`、日志、报告等个人数据）：
 
 ```bash
-cd C:\Users\peng\Documents\fund-monitor
+cd fund-monitor
 git push -u origin main
 ```
 
 3. 仓库 **Settings → Pages → Build and deployment**：Source 选 `Deploy from a branch`，Branch 选 `main`，Folder 选 `/docs`，保存。
-4. 一两分钟后访问 `https://guanghuipeng.github.io/fund-monitor/`。
+4. 一两分钟后访问 `https://<你的GitHub用户名>.github.io/fund-monitor/`。
 
 页面只包含指数估值和星级，不包含你的基金份额、成本、盈亏。`docs/.nojekyll` 已存在，防止 GitHub 用 Jekyll 处理静态文件。
 
-### 8.2 如果还想在本地跑（可选）
+### 8.2 本地手动运行（可选）
 
-`run_daily.bat` 仍保留，供本地生成完整基金面板和接收微信推送：
-
-```bat
-schtasks /Create /TN "FundMonitor" /SC WEEKLY /D MON-FRI /ST 21:30 ^
-  /TR "C:\Users\peng\Documents\fund-monitor\run_daily.bat" /F
-```
-
-这一步和 GitHub Actions 二选一即可；只关心网页星级的话，不需要本地任务。
+`run_daily.bat` 保留给本地手动运行：双击即可重新生成页面并检查基金信号（需要先把 `python` 加入 PATH）。日常自动化以 GitHub Actions 为准，不需要本地定时任务。
 
 ## 9. 回测
 
@@ -547,7 +540,7 @@ fund-monitor/
 ├─ index_watch.py       中证800/中证500/全市场 星级日报、推送、静态页
 ├─ config.json          你的配置（含 token，勿分享；已被 .gitignore 排除）
 ├─ config.example.json  示例
-├─ run_daily.bat        定时任务入口
+├─ run_daily.bat        本地手动运行入口
 ├─ docs/                GitHub Pages 静态页（index.html、.nojekyll）
 ├─ data/                状态、缓存、历史信号
 ├─ articles/            公众号归档 + inbox.txt

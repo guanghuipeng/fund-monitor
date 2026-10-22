@@ -30,8 +30,7 @@ import cycle_backtest as cb
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 ALERT_STATE_PATH = os.path.join(BASE, "data", "alert_state.json")
-PAGE_URL = (os.environ.get("INDEX_PAGE_URL")
-            or "https://guanghuipeng.github.io/fund-monitor/")
+PAGE_URL = os.environ.get("INDEX_PAGE_URL") or ""
 
 DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"), ("market", "全市场")]
 
@@ -726,7 +725,8 @@ def push_brief(rows, fresh=None):
         lines.append("- **%s %.2f★**｜%s｜今日 %s｜%s｜%s%s" % (
             r["name"], r["star"], action, _fmt_pct(r.get("chg_pct"), 2, sign=True),
             vtxt, price, est))
-    lines += ["", "完整走势图：[打开网页](%s)" % PAGE_URL]
+    if PAGE_URL:
+        lines += ["", "完整走势图：[打开网页](%s)" % PAGE_URL]
     return "\n".join(lines)
 
 
@@ -749,7 +749,8 @@ def push_brief_html(rows, fresh=None):
             htmlmod.escape(r["name"]), r["star"], action,
             _fmt_pct(r.get("chg_pct"), 2, sign=True), vtxt, price, est))
     parts.append("</ul>")
-    parts.append('<p><a href="%s">打开网页看完整走势</a></p>' % PAGE_URL)
+    if PAGE_URL:
+        parts.append('<p><a href="%s">打开网页看完整走势</a></p>' % PAGE_URL)
     return "".join(parts)
 
 
