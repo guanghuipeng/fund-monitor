@@ -680,12 +680,6 @@ def _push_configured(config):
                     and os.environ.get("GITHUB_REPOSITORY")))
 
 
-def _fmt_pct(x, signed=False):
-    if x is None:
-        return "--"
-    return ("%+.2f%%" if signed else "%.1f%%") % (x * 100)
-
-
 def _fmt_px(x):
     return "--" if x is None else "%.0f" % x
 
@@ -730,7 +724,7 @@ def push_brief(rows, fresh=None):
             price += "（T1 %s）" % _fmt_px(r["price_t1"])
         est = "｜%s" % r["estimate_label"] if r.get("estimate_label") else ""
         lines.append("- **%s %.2f★**｜%s｜今日 %s｜%s｜%s%s" % (
-            r["name"], r["star"], action, _fmt_pct(r.get("chg_pct"), True),
+            r["name"], r["star"], action, _fmt_pct(r.get("chg_pct"), 2, sign=True),
             vtxt, price, est))
     lines += ["", "完整走势图：[打开网页](%s)" % PAGE_URL]
     return "\n".join(lines)
@@ -753,7 +747,7 @@ def push_brief_html(rows, fresh=None):
         est = "｜%s" % r["estimate_label"] if r.get("estimate_label") else ""
         parts.append("<li><b>%s %.2f★</b>｜%s｜今日 %s｜%s｜%s%s</li>" % (
             htmlmod.escape(r["name"]), r["star"], action,
-            _fmt_pct(r.get("chg_pct"), True), vtxt, price, est))
+            _fmt_pct(r.get("chg_pct"), 2, sign=True), vtxt, price, est))
     parts.append("</ul>")
     parts.append('<p><a href="%s">打开网页看完整走势</a></p>' % PAGE_URL)
     return "".join(parts)
