@@ -88,8 +88,9 @@ def _append_live_row(series, row):
     else:
         live["trend_score"] = None
         live["trend"] = "?"
-    live["val_star"] = (sb.valuation_star(row["pall"])
-                        if row.get("pall") is not None else None)
+    live["val_star"] = row.get("val_star")
+    if live["val_star"] is None and row.get("pall") is not None:
+        live["val_star"] = sb.valuation_star(row["pall"])
     live["price_star"] = (sb.price_star(row["star_dd"])
                           if row.get("star_dd") is not None else None)
     return series + [live]
@@ -125,7 +126,14 @@ def _distance(row):
         return "已到 4.8 星买点"
     bits = []
     pall = row.get("pall")
-    if pall is not None:
+    if row.get("key") == "zz800":
+        vs = row.get("val_star")
+        if vs is not None:
+            if vs >= 4.8:
+                bits.append("成分估值星级 %.2f，已满足 ≥4.8" % vs)
+            else:
+                bits.append("成分估值星级 %.2f，需 ≥4.8" % vs)
+    elif pall is not None:
         if pall <= 0.20:
             bits.append("估值分位 %s，已满足 ≤20%%" % _pct(pall))
         else:

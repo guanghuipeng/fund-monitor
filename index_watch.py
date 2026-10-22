@@ -137,12 +137,28 @@ def fetch_quote(key):
     return _quote_tencent(key) or _quote_eastmoney(key)
 
 
-def _valuation_percentile(pe, pb, key, weight_hs300):
-    rows = cb._load_raw_rows(key, weight_hs300)
+def _valuation_percentile(pe, pb, key, weight_hs300, rows=None):
+    rows = rows if rows is not None else cb._load_raw_rows(key, weight_hs300)
     pes = sorted(float(r["pe_ttm"]) for r in rows)
     pbs = sorted(float(r["pb"]) for r in rows)
     return (0.6 * bisect.bisect_right(pes, pe) / float(len(pes))
             + 0.4 * bisect.bisect_right(pbs, pb) / float(len(pbs)))
+
+
+def _live_val_star(key, weight_hs300):
+    """成分指数最新估值星级；行情比估值缓存新时按涨跌缩放 PE/PB。"""
+    rows = cb._load_raw_rows(key, weight_hs300)
+    if not rows:
+        return None
+    last = rows[-1]
+    s_date = date.fromisoformat(last["date_k"])
+    pe, pb = float(last["pe_ttm"]), float(last["pb"])
+    quote = fetch_quote(key)
+    if quote and quote["date"] > s_date:
+        pe *= 1.0 + quote["chg_pct"]
+        pb *= 1.0 + quote["chg_pct"]
+    pall = _valuation_percentile(pe, pb, key, weight_hs300, rows)
+    return cb.valuation_star(pall)
 
 
 def _zone(pall, star):
@@ -267,6 +283,17 @@ def _row(key, name, weight_hs300=0.75):
     }
     quote = fetch_quote(key) if key != "market" else None
     _apply_quote(row, key, quote, weight_hs300)
+    if key == "zz800":
+        # 800 的估值星级 = 75% 沪深300 + 25% 中证500 的估值星级，
+        # 再与 800 自己的价格星级取 min；卖出仍看原来的全历史分位。
+        va = _live_val_star("hs300", weight_hs300)
+        vb = _live_val_star("zz500", weight_hs300)
+        if va is not None and vb is not None:
+            val_star = weight_hs300 * va + (1.0 - weight_hs300) * vb
+            row["val_star"] = val_star
+            row["star"] = (min(val_star, row["price_star"])
+                           if row.get("price_star") is not None else val_star)
+            row["zone"] = _zone(row["pall"], row["star"])
     if key != "market" and row.get("high_display"):
         row["price_t1"] = row["high_display"] * 0.74  # price_star 4.8 的位置
         row["price_gap"] = row["px_display"] / row["price_t1"] - 1.0
@@ -330,7 +357,10 @@ def distance_text(row):
     if row["star"] >= 4.8:
         return "已到 4.8 星买点" + suffix
     parts = []
-    parts.append("估值分位需 ≤20%%（现在 %.1f%%）" % (row["pall"] * 100))
+    if row.get("key") == "zz800":
+        parts.append("成分估值星级需 ≥4.8（现在 %.2f）" % row["val_star"])
+    else:
+        parts.append("估值分位需 ≤20%%（现在 %.1f%%）" % (row["pall"] * 100))
     if row["price_t1"] is not None:
         parts.append("价格需 ≤%.0f（现在 %.0f，%+.1f%%）" % (
             row["price_t1"], row["px_display"], row["price_gap"] * 100))
@@ -366,7 +396,9 @@ def markdown(rows, title_date=None):
             r["pe"], r["pb"], r["zone"]))
     lines.append("")
     lines.append("**怎么读**：修正星级 = min(估值星级, 价格星级)，只看该指数自己的历史，"
-                 "不是全市场星级。4.8 星才是第一档买点；全市场那一行只作参考。")
+                 "不是全市场星级。4.8 星才是第一档买点；全市场那一行只作参考。"
+                 "中证800 的估值星级 = 75% 沪深300 + 25% 中证500 的估值星级加权；"
+                 "全历史分位仍只用于卖出。")
     lines.append("")
     lines.append("### 走势")
     lines.append("| 指数 | 近1周 | 近1月 | 近1年 |")
@@ -634,7 +666,9 @@ h1{font-size:21px}
 <section class="card rule">
 <h2>怎么读</h2>
 <p>修正星级 = min(估值星级, 价格星级)，只看该指数自己的历史，<b>不是全市场星级</b>。
-4.8 星才是第一档买点：估值分位 ≤20%%，且价格距 3 年高点 ≤-26%%。</p>
+4.8 星才是第一档买点：估值分位 ≤20%%，且价格距 3 年高点 ≤-26%%。
+中证800 的估值星级 = 75%% 沪深300 + 25%% 中证500 的估值星级加权；
+全历史分位仍只用于卖出。</p>
 <p>买入：4.8★ 首笔按 1 年回撤加深（≤-60%% 投 2/3，≤-40%% 投 1/2，否则 1/3），
 剩余现金分给 T2/T3。<br>
 加仓：T2 较 T1 跌 10%%，或 T1 一年回撤≤-40%% 且 120 日线转上；

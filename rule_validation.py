@@ -52,10 +52,10 @@ def _avg(xs):
     return sum(xs) / len(xs) if xs else None
 
 
-def build_series(key):
+def build_series(key, weight_hs300=0.75):
     """逐日：估值、点位、3年回撤、星级、均线、动量、趋势。"""
-    raw = sb.build_series(key, 0.75)
-    p10 = {d: q for d, q in cb.load_valuation("10", key, 0.75)}
+    raw = sb.build_series(key, weight_hs300)
+    p10 = {d: q for d, q in cb.load_valuation("10", key, weight_hs300)}
     prices = [x[2] for x in raw]
     out = []
     for i, (d, p, px, dd, star) in enumerate(raw):
@@ -101,6 +101,24 @@ def build_series(key):
         else:
             row["vol20"] = None
         out.append(row)
+
+    # 中证800 的估值星级不能先混合 PE/PB 水平再取分位：分位不是线性的，
+    # 混合后的分位会被权重更大、但当时并不便宜的一侧带偏。改为先分别
+    # 算沪深300/中证500 的估值星级，再按市值权重合成，最后与 800 自己
+    # 的价格星级取 min。卖出仍用原来的全历史分位，不受影响。
+    if key == "zz800":
+        hs = {r["date"]: r.get("val_star")
+              for r in build_series("hs300", weight_hs300)}
+        zz = {r["date"]: r.get("val_star")
+              for r in build_series("zz500", weight_hs300)}
+        for row in out:
+            a, b = hs.get(row["date"]), zz.get(row["date"])
+            if a is None or b is None:
+                continue
+            val_star = weight_hs300 * a + (1.0 - weight_hs300) * b
+            row["val_star"] = val_star
+            row["star"] = (min(val_star, row["price_star"])
+                           if row["price_star"] is not None else val_star)
     return out
 
 

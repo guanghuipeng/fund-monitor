@@ -343,6 +343,13 @@ def latest_snapshot(code=None, key="zz500", weight_hs300=0.75):
     val_star = valuation_star(pall)
     p_star = price_star(star_dd) if star_dd is not None else None
     star = min(val_star, p_star) if p_star is not None else val_star
+    if key == "zz800":
+        # 先分别取成分指数的估值星级，再按市值权重合成；不能先混合
+        # PE/PB 水平再取分位（分位不是线性的）。卖出仍用上面的 pall。
+        va = latest_snapshot(key="hs300", weight_hs300=weight_hs300)["val_star"]
+        vb = latest_snapshot(key="zz500", weight_hs300=weight_hs300)["val_star"]
+        val_star = weight_hs300 * va + (1.0 - weight_hs300) * vb
+        star = min(val_star, p_star) if p_star is not None else val_star
 
     nav_info = None
     if code:
