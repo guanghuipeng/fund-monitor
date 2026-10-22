@@ -45,6 +45,21 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python index_watch.py --refresh --html docs/index.html
 
+      # 只有出现新的买/卖档位才推送；重复的档位不会每天刷屏。
+      # 没配 Secret 时这一步会直接跳过，不影响页面更新。
+      - name: Push actionable signal
+        continue-on-error: true
+        env:
+          PYTHONIOENCODING: utf-8
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python index_watch.py --push --signal-only
+
       - name: Commit and push
         env:
           PYTHONIOENCODING: utf-8
@@ -52,6 +67,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/index.html
+          [ -f data/alert_state.json ] && git add data/alert_state.json || true
           if git diff --cached --quiet; then
             echo "页面没有变化，跳过提交"
             exit 0

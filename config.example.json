@@ -3,7 +3,12 @@
     "enabled": false,
     "provider": "serverchan",
     "serverchan_key": "",
-    "pushplus_token": ""
+    "pushplus_token": "",
+    "smtp_host": "",
+    "smtp_port": "465",
+    "smtp_user": "",
+    "smtp_pass": "",
+    "mail_to": ""
   },
   "run": {
     "weekly_summary_weekday": 5,

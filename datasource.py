@@ -648,18 +648,65 @@ def send_pushplus(token, title, markdown, timeout=15):
     return ok, text[:300]
 
 
-def send_push(config, title, markdown):
+def send_email(host, port, user, password, to, subject, body, timeout=20):
+    """SMTP 发信；body 可以是 HTML。465 端口走 SSL，其余走 STARTTLS。"""
+    import smtplib
+    from email.header import Header
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+
+    msg = MIMEText(body, "html", "utf-8")
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = formataddr((str(Header("指数星级", "utf-8")), user))
+    msg["To"] = to
+    recipients = [x.strip() for x in to.split(",") if x.strip()]
+    port = int(port or 465)
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=timeout)
+    else:
+        server = smtplib.SMTP(host, port, timeout=timeout)
+        server.starttls()
+    try:
+        server.login(user, password)
+        server.sendmail(user, recipients, msg.as_string())
+    finally:
+        server.quit()
+    return True, "邮件已发送 -> %s" % to
+
+
+def send_push(config, title, markdown, html_body=None):
+    """推送。优先读环境变量（GitHub Actions Secrets），其次 config.json。"""
     push = config.get("push") or {}
-    provider = (push.get("provider") or "serverchan").lower()
-    if provider == "pushplus":
-        token = push.get("pushplus_token") or ""
-        if not token:
-            return False, "未配置 pushplus_token"
-        return send_pushplus(token, title, markdown)
-    key = push.get("serverchan_key") or ""
-    if not key:
-        return False, "未配置 serverchan_key"
-    return send_serverchan(key, title, markdown)
+    provider = (os.environ.get("PUSH_PROVIDER") or push.get("provider") or "").lower()
+    if not provider:
+        if os.environ.get("SMTP_HOST"):
+            provider = "email"
+        elif os.environ.get("PUSHPLUS_TOKEN"):
+            provider = "pushplus"
+        else:
+            provider = "serverchan"
+    try:
+        if provider == "email":
+            host = os.environ.get("SMTP_HOST") or push.get("smtp_host") or ""
+            port = os.environ.get("SMTP_PORT") or push.get("smtp_port") or "465"
+            user = os.environ.get("SMTP_USER") or push.get("smtp_user") or ""
+            password = os.environ.get("SMTP_PASS") or push.get("smtp_pass") or ""
+            to = os.environ.get("MAIL_TO") or push.get("mail_to") or user
+            if not (host and user and password and to):
+                return False, "未配置 SMTP_HOST / SMTP_USER / SMTP_PASS / MAIL_TO"
+            body = html_body or ("<pre>%s</pre>" % htmlmod.escape(markdown))
+            return send_email(host, port, user, password, to, title, body)
+        if provider == "pushplus":
+            token = os.environ.get("PUSHPLUS_TOKEN") or push.get("pushplus_token") or ""
+            if not token:
+                return False, "未配置 pushplus_token"
+            return send_pushplus(token, title, markdown)
+        key = os.environ.get("SERVERCHAN_KEY") or push.get("serverchan_key") or ""
+        if not key:
+            return False, "未配置 serverchan_key"
+        return send_serverchan(key, title, markdown)
+    except Exception as exc:  # noqa: BLE001
+        return False, "%s: %s" % (type(exc).__name__, exc)
 
 
 def today_str():

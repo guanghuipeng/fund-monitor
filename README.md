@@ -323,6 +323,35 @@ python fund.py article --inbox
 
 也可以随时在 Actions 页面点 **Run workflow** 手动刷新。
 
+### 8.0 买卖信号推送到微信 / 邮箱
+
+不用每天看网页，出现**新的**买/卖档位时让 GitHub Actions 主动提醒。触发条件：
+
+- 修正星级 ≥4.8（买第一笔）；
+- 价格 ≤T1×0.90 / ≤T1×0.80（买第二、三笔）；
+- 全历史分位 ≥60% / ≥63%（卖 1/3、卖剩余）。
+
+同一档位只提醒一次；信号消失后（比如又涨回去）会自动复位，下次重新触发再提醒。所以不会在熊市底部每天刷屏。
+
+在仓库 **Settings → Secrets and variables → Actions → New repository secret** 里配置**其中一种**即可：
+
+| 方式 | 需要的 Secret | 说明 |
+|---|---|---|
+| Server酱（微信直推，推荐） | `SERVERCHAN_KEY` | sct.ftqq.com 微信扫码登录，复制 SendKey；关注“方糖”服务号即可收到微信消息 |
+| PushPlus（微信直推） | `PUSHPLUS_TOKEN` | pushplus.plus 微信登录复制 token |
+| 邮箱 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `MAIL_TO` | QQ 邮箱：`smtp.qq.com`、`465`、QQ号@qq.com、SMTP 授权码；在微信里开启 QQ 邮箱提醒即可当微信通知用 |
+
+只配一种就行；同时配了多个时，优先 `SMTP_HOST`（邮件），其次 `PUSHPLUS_TOKEN`，最后 `SERVERCHAN_KEY`。想强制选某个，再加一个 `PUSH_PROVIDER` Secret，值为 `email` / `pushplus` / `serverchan`。
+
+本地想测试推送，可以临时设置环境变量后运行：
+
+```bash
+python index_watch.py --push            # 立即推一次（不判重）
+python index_watch.py --push --signal-only   # 只在新信号时推
+```
+
+推送状态存在 `data/alert_state.json`，由 Action 自动提交；不需要手动维护。
+
 ### 8.1 开启 GitHub Pages
 
 1. 在 GitHub 新建**公开**仓库 `guanghuipeng/fund-monitor`（免费账号的 Pages 只支持公开仓库）。

@@ -29,6 +29,7 @@ import cycle_backtest as cb
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
+ALERT_STATE_PATH = os.path.join(BASE, "data", "alert_state.json")
 
 DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"), ("market", "全市场")]
 
@@ -618,29 +619,94 @@ h1{font-size:21px}
 
 
 def load_config():
-    with open(CONFIG_PATH, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def push(rows):
-    import datasource as ds
     try:
-        config = load_config()
-    except Exception as exc:  # noqa: BLE001
-        print("读取 config.json 失败：%s" % exc, file=sys.stderr)
-        return 1
+        with open(CONFIG_PATH, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {}  # GitHub Actions 里没有 config.json，推送配置走环境变量
+
+
+def _alert_signals(rows):
+    """当天触发的买/卖档位。信号消失后会自动从状态里清掉，下次重新触发再提醒。"""
+    out = {}
+    for r in rows:
+        key = r.get("key")
+        if key == "market" or r.get("star") is None:
+            continue
+        star = r["star"]
+        pall = r.get("pall") or 0.0
+        px = r.get("px_display")
+        t1 = r.get("price_t1")
+        if star >= 4.8:
+            out[key + ":buy48"] = "4.8星建仓"
+        if t1 and px:
+            if px <= t1 * 0.80:
+                out[key + ":buy80"] = "价格≤T1×0.80（第三笔）"
+            elif px <= t1 * 0.90:
+                out[key + ":buy90"] = "价格≤T1×0.90（第二笔）"
+        if pall >= 0.63:
+            out[key + ":sell63"] = "分位≥63%（卖剩余）"
+        elif pall >= 0.60:
+            out[key + ":sell60"] = "分位≥60%（卖1/3）"
+    return out
+
+
+def _load_alert_state():
+    try:
+        with open(ALERT_STATE_PATH, encoding="utf-8") as fh:
+            obj = json.load(fh)
+        return set(obj.get("signals") or [])
+    except (OSError, ValueError):
+        return set()
+
+
+def _save_alert_state(signals):
+    parent = os.path.dirname(ALERT_STATE_PATH)
+    os.makedirs(parent, exist_ok=True)
+    with open(ALERT_STATE_PATH, "w", encoding="utf-8") as fh:
+        json.dump({"date": datetime.now(CN_TZ).date().isoformat(),
+                   "signals": sorted(signals)}, fh, ensure_ascii=False, indent=1)
+
+
+def _push_configured(config):
     push_cfg = config.get("push") or {}
-    if not push_cfg.get("enabled"):
-        print("推送未启用：把 config.json 里 push.enabled 改成 true，并填 serverchan_key "
-              "或 pushplus_token。")
-        return 1
-    main_row = next((r for r in rows if r["key"] == "zz800"), None)
-    title = "指数星级｜%s" % (("中证800 %.2f★" % main_row["star"])
-                             if main_row else datetime.now(CN_TZ).date().isoformat())
-    ok, msg = ds.send_push(config, title, markdown(rows))
+    return bool(push_cfg.get("enabled")
+                or os.environ.get("SERVERCHAN_KEY")
+                or os.environ.get("PUSHPLUS_TOKEN")
+                or os.environ.get("SMTP_HOST"))
+
+
+def push(rows, signal_only=False):
+    import datasource as ds
+    config = load_config()
+    if not _push_configured(config):
+        print("推送未配置：GitHub Actions 里加 SERVERCHAN_KEY（或 SMTP_*）Secret；"
+              "本地则在 config.json 填 push 配置。")
+        return 0 if signal_only else 1
+
+    current = _alert_signals(rows)
+    previous = _load_alert_state()
+    fresh = {k: v for k, v in current.items() if k not in previous}
+    if signal_only and not fresh:
+        _save_alert_state(current)
+        print("今天没有新的买卖信号，跳过推送。")
+        return 0
+
+    names = {"zz800": "中证800", "zz500": "中证500"}
+    desc = "；".join("%s %s" % (names.get(k.split(":")[0], k), v)
+                    for k, v in sorted(fresh.items()))
+    title = "指数信号｜%s %s" % (datetime.now(CN_TZ).strftime("%m-%d"),
+                                desc or "星级更新")
+    content = markdown(rows)
+    if fresh:
+        content = "**本次新增信号**：%s\n\n%s" % (desc, content)
+    ok, msg = ds.send_push(config, title, content, html_body=html(rows))
     if ok:
+        _save_alert_state(current)
         print("推送成功：%s" % title)
         return 0
+    # 发送失败：保留仍未消失的旧信号，下次继续尝试，不把新信号记成已提醒
+    _save_alert_state(previous & set(current))
     print("推送失败：%s" % msg, file=sys.stderr)
     return 1
 
@@ -655,7 +721,9 @@ def main(argv=None):
                     help="先联网刷新指数估值历史（失败则继续用缓存）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
     ap.add_argument("--push", action="store_true",
-                    help="通过 config.json 的 Server酱/PushPlus 推送")
+                    help="通过 Server酱/PushPlus/邮件推送")
+    ap.add_argument("--signal-only", action="store_true",
+                    help="只在出现新的买/卖档位时推送（配合 --push）")
     ap.add_argument("--md", default=None, help="把 Markdown 写到指定文件")
     ap.add_argument("--html", default=None,
                     help="生成静态 HTML（可直接放 GitHub Pages）")
@@ -684,7 +752,7 @@ def main(argv=None):
         print("HTML 已写入：%s" % args.html)
 
     if args.push:
-        return push(rows)
+        return push(rows, signal_only=args.signal_only)
     return 0
 
 
