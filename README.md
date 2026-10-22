@@ -287,69 +287,50 @@ python fund.py article --inbox
 
 面板每张卡片显示：最新净值/日涨跌、估值分位条、距 250 日高点、距高估区峰值、晨星评级、止盈阈值、当前动作、250 日走势。
 
-## 8. 定时运行
+## 8. 每天自动更新：GitHub Actions（不用本地电脑）
 
-生成的任务入口是 `run_daily.bat`（已包含正确的 Python 路径和 UTF-8 设置）。
+仓库自带 `.github/workflows/update-index.yml`。每个工作日**北京时间 21:35**，GitHub 的服务器会自动：
 
-推荐每个交易日 **21:30** 跑：
+1. 检出仓库；
+2. 运行 `python index_watch.py --refresh --html docs/index.html`；
+3. 如果页面有变化，自动提交并推回 `main`；
+4. GitHub Pages 随后更新，你直接打开网页看星级和买入结论。
 
-```bat
-schtasks /Create /TN "FundMonitor" /SC WEEKLY /D MON-FRI /ST 21:30 ^
-  /TR "C:\Users\peng\Documents\fund-monitor\run_daily.bat" /F
-```
+不需要自己的服务器，也不需要本地定时任务。`data/cache/` 里的历史估值作为基线提交在仓库里，每天刷新后的数据用 Actions 缓存保存，不会把仓库撑大。
 
-也可以让工具打印命令：
+首次启用时：
 
-```bash
-python fund.py schedule
-```
+1. 仓库 **Settings → Actions → General → Workflow permissions**，选 **Read and write permissions**，保存。否则 Action 没有权限把 `docs/index.html` 推回去。
+2. 仓库 **Actions** 标签 → 左侧 **Update index star page** → **Run workflow**，先手动跑一次确认。
+3. 之后每个工作日自动运行。GitHub 的定时任务可能延迟几分钟到二十分钟，不会精确到 21:35。
 
-为什么是 21:30：基金净值通常 20:00–23:00 才更新，21:30 能拿到当日净值，信号用于次日操作。
+也可以随时在 Actions 页面点 **Run workflow** 手动刷新。
 
-如果你想当天 15:00 收盘前行动，可以再加一个 14:20 的任务：
+### 8.1 开启 GitHub Pages
 
-```bat
-schtasks /Create /TN "FundMonitorIntraday" /SC WEEKLY /D MON-FRI /ST 14:20 ^
-  /TR "D:\IDE\Python39\python.exe C:\Users\peng\Documents\fund-monitor\fund.py check --intraday" /F
-```
-
-注意：
-
-- 默认只在用户登录时运行；要开机就跑需要额外配置 `/RU` 和密码。
-- 删除任务：`schtasks /Delete /TN FundMonitor /F`
-- 定时任务的输出写到 `logs/run.log`。
-- `run_daily.bat` 现在会在 `fund.py check` 之后重新生成 `docs/index.html`，方便随代码一起提交更新 GitHub Pages。
-
-## 8.1 用 GitHub Pages 免费托管指数星级页
-
-不需要自己的服务器：仓库开启 Pages，指定 `docs/` 目录即可。
-
-1. 在 GitHub 新建**公开**仓库（例如 `guanghuipeng/fund-monitor`）。免费账号的 Pages 只支持公开仓库。
-2. 本机初始化并推送（`.gitignore` 已排除 `config.json`、`data/state.json`、日志、报告等个人数据）：
+1. 在 GitHub 新建**公开**仓库 `guanghuipeng/fund-monitor`（免费账号的 Pages 只支持公开仓库）。
+2. 本机推送（仓库已经初始化并提交好，`.gitignore` 已排除 `config.json`、`data/state.json`、日志、报告等个人数据）：
 
 ```bash
 cd C:\Users\peng\Documents\fund-monitor
-python index_watch.py --refresh --html docs/index.html
-git init
-git add .
-git commit -m "index star dashboard"
-git branch -M main
-git remote add origin git@github.com:guanghuipeng/fund-monitor.git
 git push -u origin main
 ```
 
 3. 仓库 **Settings → Pages → Build and deployment**：Source 选 `Deploy from a branch`，Branch 选 `main`，Folder 选 `/docs`，保存。
 4. 一两分钟后访问 `https://guanghuipeng.github.io/fund-monitor/`。
 
-每次本地跑完 `run_daily.bat` 后，把页面更新推上去：
+页面只包含指数估值和星级，不包含你的基金份额、成本、盈亏。`docs/.nojekyll` 已存在，防止 GitHub 用 Jekyll 处理静态文件。
 
-```bash
-git add docs/index.html
-git commit -m "update index star"
-git push
+### 8.2 如果还想在本地跑（可选）
+
+`run_daily.bat` 仍保留，供本地生成完整基金面板和接收微信推送：
+
+```bat
+schtasks /Create /TN "FundMonitor" /SC WEEKLY /D MON-FRI /ST 21:30 ^
+  /TR "C:\Users\peng\Documents\fund-monitor\run_daily.bat" /F
 ```
 
-页面只包含指数估值和星级，不包含你的基金份额、成本、盈亏。`docs/.nojekyll` 已存在，防止 GitHub 用 Jekyll 处理静态文件。
+这一步和 GitHub Actions 二选一即可；只关心网页星级的话，不需要本地任务。
 
 ## 9. 回测
 
@@ -435,7 +416,7 @@ python cycle_backtest.py --latest --index market     # 全市场平均 PE/PB
 
 ### 9.3 20 万资金按规则跑完整牛熊
 
-`strategy_backtest.py` 用真实缓存数据，每轮熊市投入 20 万，按 3.4 的 T1/T2/T3 + S1/S2 + 保险规则逐日模拟。大体积历史缓存未提交到仓库，新克隆先跑一次 `python index_watch.py --refresh` 生成：
+`strategy_backtest.py` 用真实缓存数据，每轮熊市投入 20 万，按 3.4 的 T1/T2/T3 + S1/S2 + 保险规则逐日模拟。历史缓存随仓库提供，可用 `python index_watch.py --refresh` 更新：
 
 ```bash
 python strategy_backtest.py                 # 跑全部预设周期

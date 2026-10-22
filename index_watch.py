@@ -122,6 +122,15 @@ def distance_text(row):
 def markdown(rows, title_date=None):
     d = title_date or date.today().isoformat()
     lines = ["## 指数星级日报｜%s" % d, ""]
+    verdict_bits = []
+    for r in rows:
+        if not r["tradeable"]:
+            continue
+        verdict_bits.append("%s **%.2f★** %s" % (
+            r["name"], r["star"], "可买 1/3" if r["star"] >= 4.8 else "不买"))
+    if verdict_bits:
+        lines.append("**结论**：%s。" % "；".join(verdict_bits))
+        lines.append("")
     lines.append("| 指数 | 修正星级 | 估值星级 | 价格星级 | 全历史分位 | 3年回撤 | PE | PB | 状态 |")
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---|")
     for r in rows:
@@ -178,6 +187,26 @@ def html(rows, title_date=None):
         distance.append('<li><b>%s</b>：%.2f 星。%s。</li>' % (
             _esc(r["name"]), r["star"], _esc(distance_text(r))))
 
+    verdicts = []
+    for r in rows:
+        if not r["tradeable"]:
+            continue
+        if r["star"] >= 4.8:
+            cls, text = "buy", "可以买第一档（1/3）"
+            sub = "已同时满足估值和价格条件"
+        elif r["star"] >= 4.5:
+            cls, text = "watch", "接近买点，继续等"
+            sub = "还差一点，别提前满仓"
+        else:
+            cls, text = "wait", "不买，继续等 4.8 星"
+            sub = "估值分位 %.1f%%（需 ≤20%%）· 价格 %.0f（需 ≤%.0f）" % (
+                r["pall"] * 100, r["star_px"], r["price_t1"])
+        verdicts.append(
+            '<div class="verdict %s"><div class="v-name">%s</div>'
+            '<div class="v-star">%.2f<span>★</span></div>'
+            '<div class="v-text">%s</div><div class="v-sub">%s</div></div>' % (
+                cls, _esc(r["name"]), r["star"], text, _esc(sub)))
+
     return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -194,6 +223,21 @@ line-height:1.65}
 main{max-width:980px;margin:0 auto;padding:28px 18px 48px}
 h1{font-size:26px;margin:0 0 6px}
 .meta{color:var(--muted);font-size:13px;margin:0 0 22px}
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+gap:12px;margin:0 0 18px}
+.verdict{background:var(--card);border:1px solid var(--line);border-left:6px solid var(--muted);
+border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.verdict.buy{border-left-color:var(--green)}
+.verdict.watch{border-left-color:var(--amber)}
+.verdict.wait{border-left-color:#9aa7b6}
+.v-name{font-size:13px;color:var(--muted)}
+.v-star{font-size:32px;font-weight:700;line-height:1.15;color:var(--text)}
+.v-star span{font-size:16px;color:var(--accent);margin-left:2px}
+.v-text{font-size:15px;font-weight:700;margin-top:2px}
+.verdict.buy .v-text{color:var(--green)}
+.verdict.watch .v-text{color:var(--amber)}
+.verdict.wait .v-text{color:#475467}
+.v-sub{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
 padding:18px;margin:0 0 18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 table{width:100%%;border-collapse:collapse;font-size:14px}
@@ -224,6 +268,7 @@ h1{font-size:21px}
 <main>
 <h1>指数星级日报</h1>
 <p class="meta">数据截至 %(data_date)s · 生成于 %(generated)s · 中证800 / 中证500 / 全市场</p>
+<section class="verdicts">%(verdicts)s</section>
 <section class="card">
 <table>
 <thead><tr><th>指数</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
@@ -253,6 +298,7 @@ h1{font-size:21px}
         "d": _esc(d),
         "data_date": _esc(data_date_text),
         "generated": _esc(generated),
+        "verdicts": "".join(verdicts),
         "trs": "".join(trs),
         "distance": "".join(distance),
     }

@@ -1,0 +1,55 @@
+name: Update index star page
+
+on:
+  schedule:
+    # GitHub Actions 用 UTC；13:35 UTC = 北京时间 21:35，周一到周五
+    - cron: "35 13 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-index
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      # 缓存估值历史，避免每次从零下载；仓库里也有一份基线缓存兜底
+      - name: Restore valuation cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: index-cache-${{ github.run_id }}
+          restore-keys: |
+            index-cache-
+
+      - name: Rebuild star page
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python index_watch.py --refresh --html docs/index.html
+
+      - name: Commit and push
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/index.html
+          if git diff --cached --quiet; then
+            echo "页面没有变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "chore: update index star page $(date -u +%F)"
+          git push

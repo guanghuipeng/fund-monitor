@@ -14,6 +14,21 @@ line-height:1.65}
 main{max-width:980px;margin:0 auto;padding:28px 18px 48px}
 h1{font-size:26px;margin:0 0 6px}
 .meta{color:var(--muted);font-size:13px;margin:0 0 22px}
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+gap:12px;margin:0 0 18px}
+.verdict{background:var(--card);border:1px solid var(--line);border-left:6px solid var(--muted);
+border-radius:12px;padding:14px 16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.verdict.buy{border-left-color:var(--green)}
+.verdict.watch{border-left-color:var(--amber)}
+.verdict.wait{border-left-color:#9aa7b6}
+.v-name{font-size:13px;color:var(--muted)}
+.v-star{font-size:32px;font-weight:700;line-height:1.15;color:var(--text)}
+.v-star span{font-size:16px;color:var(--accent);margin-left:2px}
+.v-text{font-size:15px;font-weight:700;margin-top:2px}
+.verdict.buy .v-text{color:var(--green)}
+.verdict.watch .v-text{color:var(--amber)}
+.verdict.wait .v-text{color:#475467}
+.v-sub{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
 padding:18px;margin:0 0 18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
 table{width:100%;border-collapse:collapse;font-size:14px}
@@ -43,7 +58,8 @@ h1{font-size:21px}
 <body>
 <main>
 <h1>指数星级日报</h1>
-<p class="meta">数据截至 2026-10-21 · 生成于 2026-10-22 13:38 · 中证800 / 中证500 / 全市场</p>
+<p class="meta">数据截至 2026-10-21 · 生成于 2026-10-22 13:48 · 中证800 / 中证500 / 全市场</p>
+<section class="verdicts"><div class="verdict wait"><div class="v-name">中证800</div><div class="v-star">4.09<span>★</span></div><div class="v-text">不买，继续等 4.8 星</div><div class="v-sub">估值分位 37.7%（需 ≤20%）· 价格 2189（需 ≤2018）</div></div><div class="verdict wait"><div class="v-name">中证500</div><div class="v-star">3.95<span>★</span></div><div class="v-text">不买，继续等 4.8 星</div><div class="v-sub">估值分位 41.1%（需 ≤20%）· 价格 6841（需 ≤6683）</div></div></section>
 <section class="card">
 <table>
 <thead><tr><th>指数</th><th>修正星级</th><th>估值星级</th><th>价格星级</th>
