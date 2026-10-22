@@ -1,0 +1,15 @@
+# 个人配置与运行状态，不要上传
+config.json
+data/state.json
+data/last_run.json
+data/history.jsonl
+data/valuation_overrides.json
+logs/
+reports/
+articles/
+data/cache/articles/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

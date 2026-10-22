@@ -1,0 +1,77 @@
+{
+  "push": {
+    "enabled": false,
+    "provider": "serverchan",
+    "serverchan_key": "",
+    "pushplus_token": ""
+  },
+  "run": {
+    "weekly_summary_weekday": 5,
+    "push_on_signal_only": true,
+    "buy_cooldown_days": 10,
+    "cooldown_days": 5,
+    "rearm_days": 5,
+    "article_max_age_days": 7,
+    "index_watch_push": false
+  },
+  "thresholds": {
+    "buy": {
+      "low_pct": 0.2,
+      "deep_low_pct": 0.1,
+      "pb_guard": 0.3,
+      "active_low_nav_pct": 0.15,
+      "active_deep_nav_pct": 0.05
+    },
+    "sell": {
+      "high_pct": 0.8,
+      "extreme_pct": 0.9,
+      "active_high_nav_pct": 0.9,
+      "active_extreme_nav_pct": 0.97
+    },
+    "trailing": {
+      "broad_index": 0.08,
+      "sector_index": 0.1,
+      "active": 0.12
+    },
+    "rearm_val_pct": 0.7,
+    "rearm_drawdown": -0.08
+  },
+  "network": {
+    "proxy": ""
+  },
+  "funds": [
+    {
+      "code": "161725",
+      "alias": "白酒",
+      "kind": "index",
+      "index_code": "SZ399997",
+      "enabled": true,
+      "cost": null,
+      "shares": null,
+      "trailing_drawdown": null,
+      "notes": "演示：高波动行业指数"
+    },
+    {
+      "code": "000961",
+      "alias": "沪深300联接",
+      "kind": "index",
+      "index_code": "SH000300",
+      "enabled": true,
+      "cost": null,
+      "shares": null,
+      "trailing_drawdown": null,
+      "notes": "演示：宽基指数"
+    },
+    {
+      "code": "110022",
+      "alias": "易方达消费",
+      "kind": "active",
+      "index_code": null,
+      "enabled": true,
+      "cost": null,
+      "shares": null,
+      "trailing_drawdown": null,
+      "notes": "演示：主动权益"
+    }
+  ]
+}
