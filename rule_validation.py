@@ -16,10 +16,11 @@
   卖出：全历史分位 >= 60% 卖 1/3；>= 63% 卖剩余 2/3。
   保险：最大浮盈 >= 45% 后，从本轮高点回撤 10% 清仓（S1 前）。
 
---v3 使用线上 v3.1（与 v3_rule.py 一致）：
+--v3 使用线上 v3.2（与 v3_rule.py 一致）：
   T1 4.8★ 按 1 年回撤深度买 1/3、1/2 或 2/3；T2/T3 在跌 10%/20%
   或趋势确认时加仓；若 T2 价格始终不到，T1 后 60 天且年线向上、
-  现价高于年线 8% 时补第二笔（V 型底）；卖出仍为 60%/63%，
+  现价高于年线 8% 时补第二笔（V 型底）；1 年回撤 <=-30% 且现价
+  低于年线 15% 时暂停价格加仓（崩盘过滤）；卖出仍为 60%/63%，
   强趋势中剩余仓位改用 12% 移动止盈；保险改为最大浮盈 >= 40%
   + 回撤 10% + 年线向上。
 
@@ -133,7 +134,9 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
              insurance_dd=INSURANCE_DD, deep_frac=2.0 / 3.0,
              mid_frac=0.5, time_fill_days=365, cash_rate=0.0,
              catchup_days=0, catchup_max_p=1.0,
-             catchup_above_ma250=0.0):
+             catchup_above_ma250=0.0, s1_p10=None, s2_p10=None,
+             price_adds_need_ma250_up=False, crash_guard_dd1y=None,
+             crash_guard_below_ma250=None, crash_guard_t3_only=False):
     """从第一笔 4.8 星开始，按当前规则滚动运行；清仓后等待下一轮。
 
     rule="current"   : 分位 >= 60% 卖 1/3，>= 63% 卖剩余。
@@ -157,6 +160,16 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
     catchup_max_p  : 补仓时允许的最高全历史分位，默认 1.0（不限制）。
     catchup_above_ma250: 补仓时要求现价高于年线的最小幅度，默认 0。
                        用来区分“有效反转”和“贴着年线的熊市反弹”。
+    s1_p10 / s2_p10: 双分位卖出。除全历史分位 60%/63% 外，10 年分位达到
+                       该值也触发 S1/S2；默认 None（只用全历史分位）。
+    price_adds_need_ma250_up: T2/T3 的“较 T1 跌 10%/20%”价格触发也必须
+                       等 250 日线转上，避免在单边下跌中过早打光资金。
+    crash_guard_dd1y: 只在该 1 年回撤阈值以内（如 -0.35）启用上面的
+                       价格加仓熔断；默认 None，不启用。
+    crash_guard_below_ma250: 崩盘过滤带。启用熔断后，若现价低于年线的
+                       幅度达到该值（如 -0.15 表示低于年线 15%），暂停
+                       价格加仓；价格回到带内后恢复。默认 None 不限制。
+    crash_guard_t3_only: 熔断只作用于 T3，T2 仍按价格触发。
     """
     cash = CASH0
     shares = 0.0
@@ -285,7 +298,23 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
                 and ma250_up and p <= catchup_max_p
                 and (px / row["ma250"] - 1.0) >= catchup_above_ma250
             )
-            if px <= trig or trend_ok or time_ok or catchup_ok:
+            price_ok = px <= trig
+            crash_now = bool(
+                crash_guard_dd1y is not None
+                and (not crash_guard_t3_only or stage == 2)
+                and row.get("dd1y") is not None
+                and row["dd1y"] <= crash_guard_dd1y
+            )
+            if crash_now and crash_guard_below_ma250 is not None:
+                # 崩盘过滤带：现价仍低于年线一定幅度时，不按价格越跌越买；
+                # 回到带内后恢复。这比“必须站上年线”更早恢复加仓。
+                if (row.get("ma250")
+                        and px / row["ma250"] - 1.0
+                        <= crash_guard_below_ma250):
+                    price_ok = False
+            elif price_adds_need_ma250_up or crash_now:
+                price_ok = price_ok and ma250_up
+            if price_ok or trend_ok or time_ok or catchup_ok:
                 amt = min(per_buy, cash)
                 if amt > 1e-6:
                     sh = amt / px
@@ -296,10 +325,12 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
                     stage += 1
                     last_buy_date = d
                     last_buy_px = px
-                    if px <= trig:
+                    if price_ok:
                         note = "较T1跌%.0f%%" % (drop * 100)
                     elif trend_ok:
                         note = "趋势确认加仓"
+                    elif catchup_ok:
+                        note = "V型底趋势补仓"
                     else:
                         note = "一年后仍高于上次买入，趋势补仓"
                     tr = dict(date=d, action="T%d" % stage, px=px, pct=p,
@@ -350,19 +381,25 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
             trail_high = 0.0
 
         # ---- 估值止盈 ----
-        if shares > 1e-9 and not s1_done and p >= 0.60:
+        p10 = row.get("p10")
+        s1_by_p10 = bool(s1_p10 is not None and p10 is not None
+                         and p10 >= s1_p10)
+        if shares > 1e-9 and not s1_done and (p >= 0.60 or s1_by_p10):
             sh = shares / 3.0
             proceeds = sh * px
+            note = ("全历史分位≥60%卖1/3" if p >= 0.60
+                    else "10年分位≥%.0f%%卖1/3" % (s1_p10 * 100))
             tr = dict(date=d, action="S1", px=px, pct=p, star=row["star"],
-                      trend=row["trend"], amt=proceeds, sh=sh,
-                      note="全历史分位≥60%卖1/3")
+                      trend=row["trend"], amt=proceeds, sh=sh, note=note)
             cash += proceeds
             shares -= sh
             s1_done = True
             trades.append(tr)
             cycle_trades.append(tr)
 
-        if shares > 1e-9 and s1_done and p >= 0.63 and not trail_on:
+        s2_by_p10 = bool(s2_p10 is not None and p10 is not None
+                         and p10 >= s2_p10)
+        if shares > 1e-9 and s1_done and (p >= 0.63 or s2_by_p10) and not trail_on:
             strong = (row.get("ma250") is not None
                       and px / row["ma250"] - 1.0 >= bull)
             if rule == "bull-trail" and strong:
@@ -377,10 +414,11 @@ def simulate(series, rule="current", trail=0.10, bull=0.30,
                 cycle_trades.append(tr)
             else:
                 proceeds = shares * px
+                note = ("全历史分位≥63%卖剩余" if p >= 0.63
+                        else "10年分位≥%.0f%%卖剩余" % (s2_p10 * 100))
                 tr = dict(date=d, action="S2", px=px, pct=p,
                           star=row["star"], trend=row["trend"],
-                          amt=proceeds, sh=shares,
-                          note="全历史分位≥63%卖剩余")
+                          amt=proceeds, sh=shares, note=note)
                 cash += proceeds
                 shares = 0.0
                 trades.append(tr)
@@ -649,9 +687,23 @@ def main(argv=None):
     ap.add_argument("--catchup-above-ma250", type=float, default=None,
                     help="趋势补仓要求现价高于年线的最小幅度，如 0.10 表示 10%%；"
                          "--v3 默认 0.08")
+    ap.add_argument("--s1-p10", type=float, default=None,
+                    help="双分位卖出：10 年分位达到该值也触发 S1（如 0.65）")
+    ap.add_argument("--s2-p10", type=float, default=None,
+                    help="双分位卖出：10 年分位达到该值也触发 S2（如 0.68）")
+    ap.add_argument("--crash-guard-dd1y", type=float, default=None,
+                    help="崩盘过滤：1 年回撤达到该值（如 -0.30）时，"
+                         "价格加仓需等年线转上")
+    ap.add_argument("--crash-guard-below-ma250", type=float, default=None,
+                    help="崩盘过滤带：现价低于年线的幅度达到该值（如 -0.20）"
+                         "时暂停价格加仓，回到带内恢复")
+    ap.add_argument("--crash-guard-t3-only", action="store_true",
+                    help="崩盘过滤只作用于 T3")
+    ap.add_argument("--no-crash-guard", action="store_true",
+                    help="关闭 v3.2 崩盘过滤，仅用于和 v3.1 对照")
     ap.add_argument("--v3", action="store_true",
-                    help="使用线上 v3 预设：12%% 移动止盈 + 深度首笔 + "
-                         "趋势加仓 + 40%%/年线保险")
+                    help="使用线上 v3.2 预设：12%% 移动止盈 + 深度首笔 + "
+                         "趋势加仓 + 崩盘过滤 + 40%%/年线保险")
     ap.add_argument("--json", action="store_true", help="输出 JSON 摘要")
     args = ap.parse_args(argv)
 
@@ -667,6 +719,14 @@ def main(argv=None):
             args.catchup_days = 60
         if args.catchup_above_ma250 is None:
             args.catchup_above_ma250 = 0.08
+        if args.crash_guard_dd1y is None:
+            args.crash_guard_dd1y = -0.30
+        if args.crash_guard_below_ma250 is None:
+            args.crash_guard_below_ma250 = -0.15
+
+    if args.no_crash_guard:
+        args.crash_guard_dd1y = None
+        args.crash_guard_below_ma250 = None
 
     if args.catchup_days is None:
         args.catchup_days = 0
@@ -686,7 +746,11 @@ def main(argv=None):
                        cash_rate=args.cash_rate,
                        catchup_days=args.catchup_days,
                        catchup_max_p=args.catchup_max_p,
-                       catchup_above_ma250=args.catchup_above_ma250)
+                       catchup_above_ma250=args.catchup_above_ma250,
+                       s1_p10=args.s1_p10, s2_p10=args.s2_p10,
+                       crash_guard_dd1y=args.crash_guard_dd1y,
+                       crash_guard_below_ma250=args.crash_guard_below_ma250,
+                       crash_guard_t3_only=args.crash_guard_t3_only)
         m = analyze(series, res)
         print_report(key, series, res, m)
         out.append(dict(key=key, final=res["final"],

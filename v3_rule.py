@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""v3.1 规则的实时状态：深度首笔 + 趋势加仓 + V 型底补仓 + 40% 保险 + 12% 移动止盈。
+"""v3.2 规则的实时状态：深度首笔 + 趋势加仓 + V 型底补仓 + 崩盘过滤
++ 40% 保险 + 12% 移动止盈。
 
 直接复用 rule_validation.simulate，保证网页/推送和回测完全同一套逻辑。
 """
@@ -19,6 +20,10 @@ MID_FRAC = 0.5
 # 用于沪深300 2018 那种只跌 8%、等不到 T1×0.90 的浅 V 底。
 CATCHUP_DAYS = 60
 CATCHUP_ABOVE_MA250 = 0.08
+# 崩盘过滤：1 年回撤 <=-30% 且现价低于年线 15% 时，暂停价格加仓，
+# 等价格回到年线 85% 以上再恢复；避免 2008 年那种单边下跌中接飞刀。
+CRASH_GUARD_DD1Y = -0.30
+CRASH_GUARD_BELOW_MA250 = -0.15
 
 
 def _avg(xs):
@@ -145,7 +150,7 @@ def attach(row, key, weight_hs300):
                  "v3_trail_line", "v3_strong", "v3_position",
                  "v3_today_action", "v3_today_code",
                  "v3_current_action", "v3_first_frac",
-                 "v3_insurance_ready"):
+                 "v3_insurance_ready", "v3_crash_filter"):
         row[name] = None
     row["v3_action"] = ""
     row["v3_short"] = ""
@@ -168,7 +173,9 @@ def attach(row, key, weight_hs300):
                           insurance_gain=INSURANCE_GAIN,
                           insurance_dd=INSURANCE_DD,
                           catchup_days=CATCHUP_DAYS,
-                          catchup_above_ma250=CATCHUP_ABOVE_MA250)
+                          catchup_above_ma250=CATCHUP_ABOVE_MA250,
+                          crash_guard_dd1y=CRASH_GUARD_DD1Y,
+                          crash_guard_below_ma250=CRASH_GUARD_BELOW_MA250)
     except Exception:  # noqa: BLE001
         return
 
@@ -178,6 +185,12 @@ def attach(row, key, weight_hs300):
     ma250_slope = last.get("ma250_slope20")
     strong = bool(ma250 and px / ma250 - 1.0 >= BULL)
     row["v3_strong"] = strong
+    crash_filter = bool(
+        last.get("dd1y") is not None
+        and last["dd1y"] <= CRASH_GUARD_DD1Y
+        and ma250
+        and px / ma250 - 1.0 <= CRASH_GUARD_BELOW_MA250)
+    row["v3_crash_filter"] = crash_filter
 
     trades = res.get("trades") or []
     last_trade = trades[-1] if trades else None
@@ -293,7 +306,16 @@ def attach(row, key, weight_hs300):
             row["v3_short"] = "已卖1/3，等63%"
     elif stage < 3:
         nxt = stage + 1
-        if nxt == 2:
+        if crash_filter:
+            row["v3_action"] = (
+                "持有；崩盘过滤中（1年回撤 %s、低于年线 %s），"
+                "暂停按价格加仓；等回到年线 85%%（约 %s）以上，"
+                "或出现趋势确认"
+                % (_pct(last.get("dd1y")),
+                   _pct(px / ma250 - 1.0, 1, True),
+                   _px(_display_px(row, ma250 * 0.85))))
+            row["v3_short"] = "崩盘过滤，暂停加仓"
+        elif nxt == 2:
             row["v3_action"] = ("持有；等第二笔：≤%s，或趋势确认"
                                 "（120 日线转上 / T1 后 60 天站上年线+8%%）"
                                 % _px(_display_px(row, row["v3_t2_px"])))
@@ -327,6 +349,11 @@ def attach(row, key, weight_hs300):
         bits.append("年线 %s（现价 %s）" % (
             _px(_display_px(row, ma250)),
             _pct(px / ma250 - 1.0, 1, True)))
+    if crash_filter:
+        bits.append("崩盘过滤生效（1年回撤 %s、低于年线 %s）：价格加仓暂停，"
+                    "趋势/补仓仍有效" % (
+                        _pct(last.get("dd1y")),
+                        _pct(px / ma250 - 1.0, 1, True)))
     if insurance_ready and strong:
         bits.append("保险条件已满足，但强趋势中暂不触发")
     row["v3_detail"] = "；".join(bits) + "。"
