@@ -78,6 +78,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/index.html
+          [ -f data/star_history.jsonl ] && git add data/star_history.jsonl || true
           [ -f data/alert_state.json ] && git add data/alert_state.json || true
           if git diff --cached --quiet; then
             echo "页面没有变化，跳过提交"

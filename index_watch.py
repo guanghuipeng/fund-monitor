@@ -34,7 +34,11 @@ import v3_rule
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE, "config.json")
 ALERT_STATE_PATH = os.path.join(BASE, "data", "alert_state.json")
+HISTORY_PATH = os.path.join(BASE, "data", "star_history.jsonl")
 PAGE_URL = os.environ.get("INDEX_PAGE_URL") or ""
+HISTORY_YEARS = 3
+HISTORY_KEY_ORDER = {k: i for i, k in enumerate(
+    ("zz800", "zz500", "hs300", "market"))}
 
 DEFAULT_KEYS = [("zz800", "中证800"), ("zz500", "中证500"),
                 ("hs300", "沪深300"), ("market", "全市场")]
@@ -44,6 +48,9 @@ QUOTE_SECIDS = {"zz800": "1.000906", "zz500": "1.000905",
 QUOTE_TENCENT = {"zz800": "sh000906", "zz500": "sh000905",
                  "hs300": "sh000300"}
 CN_TZ = timezone(timedelta(hours=8))
+# 腾讯/东财都是国内行情，直连即可；空 ProxyHandler 可避免走本机代理时
+# urllib 做反向 DNS（proxy_bypass）拖慢几秒。
+_QUOTE_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _scaled(value, digits=2):
@@ -67,7 +74,7 @@ def _quote_tencent(key):
         "Referer": "https://gu.qq.com/",
     })
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _QUOTE_OPENER.open(req, timeout=10) as resp:
             text = resp.read().decode("gbk", "ignore")
     except Exception:  # noqa: BLE001
         return None
@@ -109,7 +116,7 @@ def _quote_eastmoney(key):
         "Referer": "https://quote.eastmoney.com/",
     })
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _QUOTE_OPENER.open(req, timeout=10) as resp:
             obj = json.loads(resp.read().decode("utf-8"))
     except Exception:  # noqa: BLE001
         return None
@@ -132,9 +139,18 @@ def _quote_eastmoney(key):
             "name": d.get("f58") or ""}
 
 
+_QUOTE_CACHE = {}
+
+
 def fetch_quote(key):
-    """实时/收盘行情：腾讯优先，失败再试东方财富；都失败返回 None。"""
-    return _quote_tencent(key) or _quote_eastmoney(key)
+    """实时/收盘行情：腾讯优先，失败再试东方财富；都失败返回 None。
+
+    同一次运行里同一指数只抓一次，避免估值/距离/历史各算一遍时重复请求。
+    """
+    if key in _QUOTE_CACHE:
+        return _QUOTE_CACHE[key]
+    _QUOTE_CACHE[key] = _quote_tencent(key) or _quote_eastmoney(key)
+    return _QUOTE_CACHE[key]
 
 
 def _valuation_percentile(pe, pb, key, weight_hs300, rows=None):
@@ -145,11 +161,11 @@ def _valuation_percentile(pe, pb, key, weight_hs300, rows=None):
             + 0.4 * bisect.bisect_right(pbs, pb) / float(len(pbs)))
 
 
-def _live_val_star(key, weight_hs300):
-    """成分指数最新估值星级；行情比估值缓存新时按涨跌缩放 PE/PB。"""
+def _live_pe_pb(key, weight_hs300):
+    """最新 PE/PB：估值缓存 + 今日行情（缓存比行情旧时按涨跌缩放）。"""
     rows = cb._load_raw_rows(key, weight_hs300)
     if not rows:
-        return None
+        return None, None, []
     last = rows[-1]
     s_date = date.fromisoformat(last["date_k"])
     pe, pb = float(last["pe_ttm"]), float(last["pb"])
@@ -157,8 +173,60 @@ def _live_val_star(key, weight_hs300):
     if quote and quote["date"] > s_date:
         pe *= 1.0 + quote["chg_pct"]
         pb *= 1.0 + quote["chg_pct"]
-    pall = _valuation_percentile(pe, pb, key, weight_hs300, rows)
-    return cb.valuation_star(pall)
+    return pe, pb, rows
+
+
+def _live_val_star(key, weight_hs300):
+    """成分指数最新估值星级。"""
+    pe, pb, rows = _live_pe_pb(key, weight_hs300)
+    if not rows:
+        return None
+    return cb.valuation_star(
+        _valuation_percentile(pe, pb, key, weight_hs300, rows))
+
+
+def _valuation_price_t1(key, weight_hs300):
+    """估值星级达到 4.8 时对应的指数点位（按当前 PE/PB 同比例缩放）。
+
+    中证800 的估值星级是 75% 沪深300 + 25% 中证500 的加权，
+    所以这里也按成分各自的估值星级加权求解。
+    """
+    if key == "market":
+        return None
+    if key == "zz800":
+        comp = []
+        for k in ("hs300", "zz500"):
+            pe, pb, rows = _live_pe_pb(k, weight_hs300)
+            if not rows:
+                return None
+            comp.append((pe, pb, rows))
+        w = weight_hs300
+
+        def star_at(f):
+            a = cb.valuation_star(_valuation_percentile(
+                comp[0][0] * f, comp[0][1] * f, "hs300", w, comp[0][2]))
+            b = cb.valuation_star(_valuation_percentile(
+                comp[1][0] * f, comp[1][1] * f, "zz500", w, comp[1][2]))
+            return w * a + (1.0 - w) * b
+    else:
+        pe, pb, rows = _live_pe_pb(key, weight_hs300)
+        if not rows:
+            return None
+
+        def star_at(f):
+            return cb.valuation_star(_valuation_percentile(
+                pe * f, pb * f, key, weight_hs300, rows))
+
+    if star_at(1.0) >= 4.8:
+        return 1.0
+    lo, hi = 0.2, 1.0
+    for _ in range(50):
+        mid = (lo + hi) / 2.0
+        if star_at(mid) >= 4.8:
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 def _zone(pall, star):
@@ -298,10 +366,24 @@ def _row(key, name, weight_hs300=0.75):
         row["price_t1"] = row["high_display"] * 0.74  # price_star 4.8 的位置
         row["price_gap"] = row["px_display"] / row["price_t1"] - 1.0
         row["val_gap"] = row["pall"] - 0.20
+        vf = _valuation_price_t1(key, weight_hs300)
+        row["val_price_t1"] = (row["px_display"] * vf) if vf else None
+        if row["val_price_t1"] and row.get("px_display"):
+            row["val_px_gap"] = row["val_price_t1"] / row["px_display"] - 1.0
+        else:
+            row["val_px_gap"] = None
+        levels = [x for x in (row["price_t1"], row["val_price_t1"]) if x]
+        if levels and row.get("px_display"):
+            row["drop_to_t1"] = min(levels) / row["px_display"] - 1.0
+        else:
+            row["drop_to_t1"] = None
     else:
         row["price_t1"] = None
         row["price_gap"] = None
         row["val_gap"] = None
+        row["val_price_t1"] = None
+        row["val_px_gap"] = None
+        row["drop_to_t1"] = None
     _attach_trend(row, key, quote, weight_hs300)
     v3_rule.attach(row, key, weight_hs300)
     return row
@@ -479,15 +561,27 @@ def distance_text(row):
     suffix = ("（%s）" % row["estimate_label"]) if row.get("estimate") else ""
     if row["star"] >= 4.8:
         return "已到 4.8 星买点" + suffix
+    head = ""
+    if row.get("drop_to_t1") is not None and row["drop_to_t1"] < 0:
+        head = "还需跌 %.1f%%；" % (-row["drop_to_t1"] * 100)
     parts = []
-    if row.get("key") == "zz800":
+    if row.get("val_star") is not None and row["val_star"] >= 4.8:
+        parts.append("估值条件已满足")
+    elif row.get("val_price_t1") is not None:
+        parts.append("估值条件需 ≤%.0f（现 %.0f，%+.1f%%）" % (
+            row["val_price_t1"], row["px_display"], row["val_px_gap"] * 100))
+    elif row.get("key") == "zz800":
         parts.append("成分估值星级需 ≥4.8（现在 %.2f）" % row["val_star"])
     else:
         parts.append("估值分位需 ≤20%%（现在 %.1f%%）" % (row["pall"] * 100))
-    if row["price_t1"] is not None:
-        parts.append("价格需 ≤%.0f（现在 %.0f，%+.1f%%）" % (
-            row["price_t1"], row["px_display"], row["price_gap"] * 100))
-    return "；".join(parts) + suffix
+    if row.get("price_t1") is not None:
+        if row.get("price_star") is not None and row["price_star"] >= 4.8:
+            parts.append("价格星级已满足")
+        else:
+            gap = row["price_t1"] / row["px_display"] - 1.0
+            parts.append("价格条件需 ≤%.0f（现 %.0f，%+.1f%%）" % (
+                row["price_t1"], row["px_display"], gap * 100))
+    return head + "；".join(parts) + suffix
 
 
 def markdown(rows, title_date=None):
@@ -598,6 +692,296 @@ def _esc(s):
     return html.escape("" if s is None else str(s))
 
 
+# ------------------------------------------------------------ 星级历史
+def _history_cutoff(years=HISTORY_YEARS):
+    today = datetime.now(CN_TZ).date()
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:  # 2 月 29 日
+        return today.replace(year=today.year - years, day=28)
+
+
+def _pe_pb_map(key, weight_hs300=0.75):
+    rows = cb._load_raw_rows(key, weight_hs300)
+    return {r["date_k"]: (float(r["pe_ttm"]), float(r["pb"])) for r in rows}
+
+
+def _hist_record(key, dk, star, val_star, price_star, pall, dd,
+                 pe, pb, px=None, flag="o"):
+    return {
+        "d": dk, "k": key, "s": round(star, 3),
+        "v": None if val_star is None else round(val_star, 3),
+        "p": None if price_star is None else round(price_star, 3),
+        "q": None if pall is None else round(pall, 4),
+        "r": None if dd is None else round(dd, 4),
+        "e": None if pe is None else round(pe, 2),
+        "b": None if pb is None else round(pb, 2),
+        "x": None if px is None else round(px, 2),
+        "f": flag,
+    }
+
+
+def backfill_star_history(years=HISTORY_YEARS, weight_hs300=0.75):
+    """用官方估值历史回算最近 N 年的每日星级。
+
+    口径和线上页面一致：中证800 的估值星级 = 75% 沪深300 + 25% 中证500
+    的估值星级加权，再和自己的价格星级取 min。
+    """
+    import strategy_backtest as sb
+
+    cutoff = _history_cutoff(years)
+    out = {}
+    comp = {}
+    for key in ("zz500", "hs300"):
+        pe_map = _pe_pb_map(key, weight_hs300)
+        recs = {}
+        for d, p, px, dd, _star in sb.build_series(key, weight_hs300):
+            if d < cutoff:
+                continue
+            dk = d.isoformat()
+            if dk not in pe_map:
+                continue
+            pe, pb = pe_map[dk]
+            val_star = cb.valuation_star(p)
+            price_star = cb.price_star(dd)
+            recs[dk] = _hist_record(
+                key, dk, min(val_star, price_star), val_star, price_star,
+                p, dd, pe, pb, px)
+        comp[key] = recs
+        out[key] = recs
+
+    pe_map = _pe_pb_map("zz800", weight_hs300)
+    recs = {}
+    for d, p, _px, dd, _star in sb.build_series("zz800", weight_hs300):
+        dk = d.isoformat()
+        if d < cutoff or dk not in pe_map:
+            continue
+        va = (comp["hs300"].get(dk) or {}).get("v")
+        vb = (comp["zz500"].get(dk) or {}).get("v")
+        if va is None or vb is None:
+            val_star = cb.valuation_star(p)
+        else:
+            val_star = weight_hs300 * va + (1.0 - weight_hs300) * vb
+        price_star = cb.price_star(dd)
+        pe, pb = pe_map[dk]
+        # 800 的历史点位是合成点位，和真实 000906 不同，历史里不存点位。
+        recs[dk] = _hist_record(
+            "zz800", dk, min(val_star, price_star), val_star, price_star,
+            p, dd, pe, pb, None)
+    out["zz800"] = recs
+
+    pe_map = _pe_pb_map("market", weight_hs300)
+    recs = {}
+    for d, p in cb.load_valuation("all", "market", weight_hs300):
+        dk = d.isoformat()
+        if d < cutoff or dk not in pe_map:
+            continue
+        pe, pb = pe_map[dk]
+        star = cb.valuation_star(p)
+        recs[dk] = _hist_record(
+            "market", dk, star, star, None, p, None, pe, pb, None)
+    out["market"] = recs
+    return out
+
+
+def _official_records_for_dates(dates_iso, weight_hs300=0.75):
+    """只回算指定日期（通常只有缓存新出现的 1-2 天）。
+
+    全量 build_series 要跑几十秒，日常补齐没必要；这里对每个日期直接算
+    “截至当天的分位 + 过去 3 年回撤”，结果与全量回算一致。
+    """
+    wanted = set(dates_iso)
+    if not wanted:
+        return {}
+    raw = {k: cb._load_raw_rows(k, weight_hs300)
+           for k in ("zz500", "hs300", "zz800", "market")}
+    idx = {k: {r["date_k"]: i for i, r in enumerate(v)}
+           for k, v in raw.items()}
+    navs = {}
+    for key in ("zz500", "hs300", "zz800"):
+        try:
+            navs[key] = cb.load_index_nav(key, weight_hs300)
+        except Exception:  # noqa: BLE001
+            navs[key] = (None, None)
+
+    def pct(key, i):
+        rows = raw[key]
+        pe = float(rows[i]["pe_ttm"])
+        pb = float(rows[i]["pb"])
+        pes = sorted(float(r["pe_ttm"]) for r in rows[:i + 1])
+        pbs = sorted(float(r["pb"]) for r in rows[:i + 1])
+        return (0.6 * bisect.bisect_right(pes, pe) / len(pes)
+                + 0.4 * bisect.bisect_right(pbs, pb) / len(pbs))
+
+    def price_dd(key, dk):
+        nav, nav_dates = navs.get(key) or (None, None)
+        if not nav:
+            return None, None
+        d = date.fromisoformat(dk)
+        j = bisect.bisect_right(nav_dates, d) - 1
+        if j < 0:
+            return None, None
+        px = nav[nav_dates[j]]
+        try:
+            c = d.replace(year=d.year - 3)
+        except ValueError:
+            c = d.replace(year=d.year - 3, day=28)
+        k0 = bisect.bisect_left(nav_dates, c)
+        high = max(nav[x] for x in nav_dates[k0:j + 1])
+        return px, px / high - 1.0
+
+    out = {}
+    comp = {}
+    for key in ("zz500", "hs300"):
+        rows = raw[key]
+        for dk in wanted:
+            i = idx[key].get(dk)
+            if i is None:
+                continue
+            pe, pb = float(rows[i]["pe_ttm"]), float(rows[i]["pb"])
+            p = pct(key, i)
+            val_star = cb.valuation_star(p)
+            px, dd = price_dd(key, dk)
+            price_star = cb.price_star(dd) if dd is not None else None
+            star = min(val_star, price_star) if price_star is not None else val_star
+            out[(dk, key)] = _hist_record(
+                key, dk, star, val_star, price_star, p, dd, pe, pb, px)
+            comp.setdefault(dk, {})[key] = val_star
+
+    rows = raw["zz800"]
+    for dk in wanted:
+        i = idx["zz800"].get(dk)
+        if i is None:
+            continue
+        pe, pb = float(rows[i]["pe_ttm"]), float(rows[i]["pb"])
+        p = pct("zz800", i)
+        vals = comp.get(dk) or {}
+        va, vb = vals.get("hs300"), vals.get("zz500")
+        if va is None or vb is None:
+            val_star = cb.valuation_star(p)
+        else:
+            val_star = weight_hs300 * va + (1.0 - weight_hs300) * vb
+        _px, dd = price_dd("zz800", dk)
+        price_star = cb.price_star(dd) if dd is not None else None
+        star = min(val_star, price_star) if price_star is not None else val_star
+        out[(dk, "zz800")] = _hist_record(
+            "zz800", dk, star, val_star, price_star, p, dd, pe, pb, None)
+
+    rows = raw["market"]
+    for dk in wanted:
+        i = idx["market"].get(dk)
+        if i is None:
+            continue
+        pe, pb = float(rows[i]["pe_ttm"]), float(rows[i]["pb"])
+        p = pct("market", i)
+        star = cb.valuation_star(p)
+        out[(dk, "market")] = _hist_record(
+            "market", dk, star, star, None, p, None, pe, pb, None)
+    return out
+
+
+def _live_history_records(rows):
+    """把本次实时/收盘快照转成历史记录（只覆盖当天）。"""
+    recs = []
+    for r in rows:
+        if r.get("star") is None:
+            continue
+        dk = r.get("quote_date") or r.get("data_date")
+        if not dk:
+            continue
+        label = r.get("estimate_label") or ""
+        flag = "i" if label == "盘中估算" else ("c" if label == "收盘估算" else "o")
+        recs.append(_hist_record(
+            r["key"], dk, r["star"], r.get("val_star"), r.get("price_star"),
+            r.get("pall"), r.get("star_dd"), r.get("pe"), r.get("pb"),
+            r.get("px_display") if r.get("tradeable") else None, flag))
+    return recs
+
+
+def load_star_history():
+    if not os.path.exists(HISTORY_PATH):
+        return []
+    out = []
+    with open(HISTORY_PATH, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("d") and rec.get("k") and rec.get("s") is not None:
+                out.append(rec)
+    return out
+
+
+def _save_star_history(recs):
+    parent = os.path.dirname(HISTORY_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(HISTORY_PATH, "w", encoding="utf-8") as fh:
+        for rec in recs:
+            fh.write(json.dumps(rec, ensure_ascii=False,
+                                separators=(",", ":")) + "\n")
+
+
+def update_star_history(rows, years=HISTORY_YEARS, weight_hs300=0.75,
+                        force=False):
+    """回算历史 + 写入今日快照，返回按日期排序的记录列表。
+
+    同一天：官方估值回算优先于盘中/收盘估算；实时记录只补今天及缓存还没
+    更新到的日期。
+    """
+    cutoff = _history_cutoff(years)
+    merged = {}
+    for rec in load_star_history() if not force else []:
+        try:
+            d = date.fromisoformat(rec["d"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d >= cutoff:
+            merged[(rec["d"], rec["k"])] = rec
+
+    # 每个指数只补“自己的官方数据里存在、但历史里还没有官方值”的日期。
+    # 这样既能在晚间把盘中估算改成官方值，也不会因为全市场缺周五而反复重算。
+    expected = {}
+    for key in ("zz500", "hs300", "zz800", "market"):
+        expected[key] = {r["date_k"] for r in cb._load_raw_rows(key, weight_hs300)
+                         if r["date_k"] >= cutoff.isoformat()}
+    needs = set()
+    for key, day_set in expected.items():
+        for dk in day_set:
+            rec = merged.get((dk, key))
+            if rec is None or rec.get("f") != "o":
+                needs.add(dk)
+    needs = sorted(needs)
+
+    try:
+        if force or not merged or len(needs) > 60:
+            official = {}
+            for recs in backfill_star_history(years, weight_hs300).values():
+                official.update(recs)
+        else:
+            official = _official_records_for_dates(needs, weight_hs300)
+    except Exception as exc:  # noqa: BLE001
+        print("回算历史星级失败：%s（只记录今日）" % exc, file=sys.stderr)
+        official = {}
+    for rec in official.values():
+        merged[(rec["d"], rec["k"])] = rec
+
+    for rec in _live_history_records(rows):
+        prev = merged.get((rec["d"], rec["k"]))
+        if prev and prev.get("f") == "o" and rec.get("f") != "o":
+            continue
+        merged[(rec["d"], rec["k"])] = rec
+
+    out = sorted(merged.values(),
+                 key=lambda r: (r["d"], HISTORY_KEY_ORDER.get(r["k"], 99)))
+    _save_star_history(out)
+    return out
+
+
 def _spark(points, up, width=112, height=32):
     vals = [float(v) for v in (points or []) if v is not None]
     if len(vals) < 2:
@@ -616,8 +1000,302 @@ def _spark(points, up, width=112, height=32):
             'stroke-linecap="round"/></svg>') % (cls, width, height, " ".join(pts))
 
 
-def html(rows, title_date=None):
+def _history_html(history):
+    """历史星级板块：走势图 + 分页表格 + 单日明细（纯前端，无外部依赖）。"""
+    payload = json.dumps(history or [], ensure_ascii=False,
+                         separators=(",", ":")).replace("</", "<\\/")
+    return """<style>
+#history .hist-controls{display:flex;justify-content:space-between;align-items:center;
+gap:12px;flex-wrap:wrap;margin:0 0 10px}
+.hist-ranges{display:flex;gap:6px;flex-wrap:wrap}
+.hist-ranges button{border:1px solid var(--line);background:#fff;color:var(--muted);
+border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer}
+.hist-ranges button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.hist-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.hist-legend .hl{display:inline-flex;align-items:center;gap:5px}
+.hist-legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.hist-chart-wrap{position:relative;margin:4px 0 12px}
+#histChart{width:100%;height:auto;display:block}
+.hist-tip{position:absolute;display:none;background:#111827;color:#fff;font-size:12px;
+padding:4px 8px;border-radius:6px;pointer-events:none;white-space:nowrap;z-index:5}
+.hist-table-wrap{overflow-x:auto}
+.hist-table td{white-space:nowrap}
+.hist-table tbody tr{cursor:pointer}
+.hist-table tbody tr:hover{background:#f3f6fb}
+.hist-table td.st-buy{color:var(--green);font-weight:700}
+.hist-table td.st-watch{color:var(--amber);font-weight:700}
+.hist-table td.na{color:#b6bec9}
+.hist-pager{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+margin:12px 0 0;font-size:13px;color:var(--muted)}
+.hist-pager button{border:1px solid var(--line);background:#fff;color:var(--text);
+border-radius:8px;padding:4px 10px;font-size:13px;cursor:pointer}
+.hist-pager button:disabled{opacity:.45;cursor:default}
+.hist-jump{margin-left:auto;display:inline-flex;align-items:center;gap:6px}
+.hist-jump input{border:1px solid var(--line);border-radius:8px;padding:3px 6px;
+font-size:13px;color:var(--text)}
+.hist-detail{display:none;background:#f8fafc;border:1px solid var(--line);
+border-radius:12px;padding:12px;margin:12px 0}
+.hd-date{font-size:13px;font-weight:700;color:var(--muted);margin:0 0 8px}
+.hd-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.hd-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.hd-top{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.hd-name{font-weight:700}
+.hd-flag{color:var(--muted);font-size:11px}
+.hd-star{font-size:24px;font-weight:700;line-height:1.2}
+.hd-star span{font-size:12px;color:var(--accent);margin-left:2px}
+.hd-star.st-buy{color:var(--green)}
+.hd-star.st-watch{color:var(--amber)}
+.hd-metrics{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;color:var(--muted)}
+.hd-metrics b{color:var(--text);font-weight:600}
+@media(max-width:640px){
+.hist-table{font-size:11px}
+.hist-jump{margin-left:0}
+.hd-grid{grid-template-columns:1fr 1fr}
+}
+</style>
+<section class="card" id="history">
+<h2>历史星级</h2>
+<p class="rule">每个交易日一行，点日期看当天明细。早期数据由官方估值回算，
+当天盘中为估算值，晚间以官方数据为准。</p>
+<div class="hist-controls">
+  <div class="hist-ranges" id="histRanges">
+    <button data-days="30">30天</button>
+    <button data-days="90" class="on">90天</button>
+    <button data-days="180">180天</button>
+    <button data-days="365">1年</button>
+    <button data-days="0">全部</button>
+  </div>
+  <div class="hist-legend" id="histLegend"></div>
+</div>
+<div class="hist-chart-wrap">
+  <svg id="histChart" role="img" aria-label="星级历史走势"></svg>
+  <div class="hist-tip" id="histTip"></div>
+</div>
+<div class="hist-detail" id="histDetail"></div>
+<table class="hist-table">
+<thead><tr><th>日期</th><th>中证800</th><th>中证500</th><th>沪深300</th><th>全市场</th></tr></thead>
+<tbody id="histBody"></tbody>
+</table>
+<div class="hist-pager">
+  <button id="histPrev">上一页</button>
+  <span id="histPage"></span>
+  <button id="histNext">下一页</button>
+  <label class="hist-jump">跳到 <input id="histDate" type="date"> <button id="histGo">查看</button></label>
+</div>
+</section>
+<script>
+(function(){
+var HIST = __HIST_JSON__;
+var KEYS = ["zz800","zz500","hs300","market"];
+var NAMES = {zz800:"中证800",zz500:"中证500",hs300:"沪深300",market:"全市场"};
+var COLORS = {zz800:"#2563eb",zz500:"#dc2626",hs300:"#059669",market:"#9ca3af"};
+var FLAGS = {o:"官方",i:"盘中估算",c:"收盘估算"};
+var PAGE = 20;
+var byDate = {}, dates = [], page = 1;
+for (var i = 0; i < HIST.length; i++) {
+  var r = HIST[i];
+  if (!byDate[r.d]) { byDate[r.d] = {}; dates.push(r.d); }
+  byDate[r.d][r.k] = r;
+}
+dates.sort();
+if (!dates.length) {
+  var box = document.getElementById("history");
+  if (box) box.insertAdjacentHTML("beforeend",
+    '<p class="rule">还没有历史记录，下一次生成页面时会写入。</p>');
+  return;
+}
+var W = 900, H = 300, PAD = {l:40, r:16, t:18, b:30}, chartState = {ds:[]};
+function el(tag, attrs, text) {
+  var e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (var k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function rangeDates(days) {
+  if (!days) return dates.slice();
+  var last = new Date(dates[dates.length-1] + "T00:00:00");
+  var start = new Date(last.getTime());
+  start.setDate(start.getDate() - days);
+  return dates.filter(function(d){ return new Date(d+"T00:00:00") >= start; });
+}
+function drawChart(days) {
+  var svg = document.getElementById("histChart");
+  if (!svg) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  var ds = rangeDates(days);
+  chartState.ds = ds;
+  if (ds.length < 2) {
+    svg.appendChild(el("text", {x:W/2, y:H/2, "text-anchor":"middle",
+      fill:"#9ca3af", "font-size":"14"}, "历史数据积累中"));
+    return;
+  }
+  var minv = 5.0;
+  ds.forEach(function(d){
+    var rec = byDate[d] || {};
+    KEYS.forEach(function(k){
+      var r = rec[k];
+      if (r && r.s != null) minv = Math.min(minv, r.s);
+    });
+  });
+  var lo = Math.min(3.5, Math.floor((minv - 0.1) * 10) / 10), hi = 5.0;
+  function x(i) { return PAD.l + i * (W - PAD.l - PAD.r) / (ds.length - 1); }
+  function y(v) { v = Math.max(lo, Math.min(hi, v));
+    return PAD.t + (hi - v) / (hi - lo) * (H - PAD.t - PAD.b); }
+  var ticks = [lo, 4.0, 4.5, 4.8, 5.0].filter(function(v, i, a){
+    return v >= lo - 1e-9 && a.indexOf(v) === i; });
+  ticks.forEach(function(v){
+    var key = Math.abs(v - 4.8) < 1e-9;
+    svg.appendChild(el("line", {x1:PAD.l, x2:W-PAD.r, y1:y(v), y2:y(v),
+      stroke:key ? "#b45309" : "#e5e7eb", "stroke-width":key ? 1.4 : 1,
+      "stroke-dasharray":key ? "5 4" : ""}));
+    svg.appendChild(el("text", {x:PAD.l-6, y:y(v)+4, "text-anchor":"end",
+      fill:key ? "#b45309" : "#9ca3af", "font-size":"11"}, v.toFixed(1)));
+  });
+  var n = Math.min(6, ds.length);
+  var longRange = !days || days >= 365;
+  for (var i = 0; i < n; i++) {
+    var idx = Math.round(i * (ds.length - 1) / (n - 1));
+    svg.appendChild(el("text", {x:x(idx), y:H-10,
+      "text-anchor":i === 0 ? "start" : (i === n-1 ? "end" : "middle"),
+      fill:"#9ca3af", "font-size":"11"},
+      longRange ? ds[idx].slice(2) : ds[idx].slice(5)));
+  }
+  KEYS.forEach(function(k){
+    var pts = [];
+    ds.forEach(function(d, i){
+      var rec = byDate[d] || {}, r = rec[k];
+      if (r && r.s != null) pts.push(x(i) + "," + y(r.s));
+    });
+    if (pts.length > 1) {
+      svg.appendChild(el("polyline", {points:pts.join(" "), fill:"none",
+        stroke:COLORS[k], "stroke-width":1.8, "stroke-linejoin":"round",
+        "stroke-linecap":"round", opacity:k === "market" ? 0.7 : 1}));
+    }
+  });
+  var hg = el("g", {});
+  svg.appendChild(hg);
+  svg.onmousemove = function(ev) {
+    var rect = svg.getBoundingClientRect();
+    var mx = (ev.clientX - rect.left) * (W / rect.width);
+    var idx = Math.round((mx - PAD.l) / ((W - PAD.l - PAD.r) / (ds.length - 1)));
+    idx = Math.max(0, Math.min(ds.length - 1, idx));
+    while (hg.firstChild) hg.removeChild(hg.firstChild);
+    hg.appendChild(el("line", {x1:x(idx), x2:x(idx), y1:PAD.t, y2:H-PAD.b,
+      stroke:"#9ca3af", "stroke-width":1, "stroke-dasharray":"3 3"}));
+    var rec = byDate[ds[idx]] || {};
+    KEYS.forEach(function(k){
+      var r = rec[k];
+      if (r && r.s != null) hg.appendChild(el("circle",
+        {cx:x(idx), cy:y(r.s), r:3, fill:COLORS[k]}));
+    });
+    var tip = document.getElementById("histTip");
+    if (tip) {
+      var lines = [ds[idx]];
+      KEYS.forEach(function(k){
+        if (rec[k]) lines.push(NAMES[k] + " " + rec[k].s.toFixed(2));
+      });
+      tip.textContent = lines.join(" · ");
+      tip.style.display = "block";
+      var left = x(idx) / W * rect.width;
+      tip.style.left = Math.max(0, Math.min(rect.width - 150, left - 70)) + "px";
+      tip.style.top = "2px";
+    }
+  };
+  svg.onmouseleave = function() {
+    while (hg.firstChild) hg.removeChild(hg.firstChild);
+    var tip = document.getElementById("histTip");
+    if (tip) tip.style.display = "none";
+  };
+}
+function fmt(v, d) { return v == null ? "--" : v.toFixed(d == null ? 2 : d); }
+function pct(v) { return v == null ? "--" : (v * 100).toFixed(1) + "%"; }
+function starCls(v) { return v >= 4.8 ? "st-buy" : (v >= 4.5 ? "st-watch" : ""); }
+function starCell(r) {
+  if (!r) return '<td class="na">--</td>';
+  return '<td class="' + starCls(r.s) + '">' + r.s.toFixed(2) + '</td>';
+}
+function renderTable() {
+  var desc = dates.slice().reverse();
+  var pages = Math.max(1, Math.ceil(desc.length / PAGE));
+  page = Math.max(1, Math.min(page, pages));
+  var rows = desc.slice((page-1)*PAGE, page*PAGE).map(function(d){
+    var rec = byDate[d] || {};
+    return '<tr data-date="' + d + '"><td class="name">' + d + '</td>' +
+      KEYS.map(function(k){ return starCell(rec[k]); }).join("") + '</tr>';
+  }).join("");
+  document.getElementById("histBody").innerHTML = rows;
+  document.getElementById("histPage").textContent =
+    "第 " + page + " / " + pages + " 页 · 共 " + desc.length + " 个交易日";
+  document.getElementById("histPrev").disabled = page <= 1;
+  document.getElementById("histNext").disabled = page >= pages;
+}
+function showDetail(d) {
+  var rec = byDate[d];
+  if (!rec) return;
+  var cards = KEYS.filter(function(k){ return rec[k]; }).map(function(k){
+    var r = rec[k];
+    return '<div class="hd-card"><div class="hd-top">' +
+      '<span class="hd-name" style="color:' + COLORS[k] + '">' + NAMES[k] + '</span>' +
+      '<span class="hd-flag">' + (FLAGS[r.f] || "") + '</span></div>' +
+      '<div class="hd-star ' + starCls(r.s) + '">' + r.s.toFixed(2) +
+      '<span>★</span></div><div class="hd-metrics">' +
+      '<span>估值 <b>' + fmt(r.v) + '</b></span>' +
+      '<span>价格 <b>' + fmt(r.p) + '</b></span>' +
+      '<span>分位 <b>' + pct(r.q) + '</b></span>' +
+      '<span>回撤 <b>' + pct(r.r) + '</b></span>' +
+      '<span>PE <b>' + fmt(r.e) + '</b></span>' +
+      '<span>PB <b>' + fmt(r.b) + '</b></span>' +
+      (r.x != null ? '<span>点位 <b>' + Math.round(r.x) + '</b></span>' : '') +
+      '</div></div>';
+  }).join("");
+  var box = document.getElementById("histDetail");
+  box.innerHTML = '<div class="hd-date">' + d + ' 明细</div>' +
+    '<div class="hd-grid">' + cards + '</div>';
+  box.style.display = "block";
+}
+document.getElementById("histLegend").innerHTML = KEYS.map(function(k){
+  return '<span class="hl"><i style="background:' + COLORS[k] + '"></i>' +
+    NAMES[k] + '</span>';
+}).join("");
+document.getElementById("histRanges").addEventListener("click", function(ev){
+  var b = ev.target;
+  if (b.tagName !== "BUTTON") return;
+  var days = parseInt(b.getAttribute("data-days"), 10);
+  var all = this.querySelectorAll("button");
+  for (var i = 0; i < all.length; i++) all[i].className = "";
+  b.className = "on";
+  drawChart(days);
+});
+document.getElementById("histBody").addEventListener("click", function(ev){
+  var tr = ev.target.closest ? ev.target.closest("tr") : null;
+  if (tr && tr.getAttribute("data-date")) showDetail(tr.getAttribute("data-date"));
+});
+document.getElementById("histPrev").onclick = function(){ page--; renderTable(); };
+document.getElementById("histNext").onclick = function(){ page++; renderTable(); };
+document.getElementById("histGo").onclick = function(){
+  var v = document.getElementById("histDate").value;
+  if (!v || dates.indexOf(v) < 0) { alert("这一天没有记录"); return; }
+  var desc = dates.slice().reverse();
+  page = Math.floor(desc.indexOf(v) / PAGE) + 1;
+  renderTable();
+  showDetail(v);
+};
+document.getElementById("histDate").addEventListener("keydown", function(ev){
+  if (ev.key === "Enter") document.getElementById("histGo").click();
+});
+drawChart(90);
+renderTable();
+showDetail(dates[dates.length-1]);
+})();
+</script>""".replace("__HIST_JSON__", payload)
+
+
+def html(rows, title_date=None, history=None):
     d = title_date or datetime.now(CN_TZ).date().isoformat()
+    if history is None:
+        history = load_star_history()
+    history_section = _history_html(history)
     generated = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M")
     data_dates = sorted({r["data_date"] for r in rows})
     data_date_text = data_dates[-1] if data_dates else d
@@ -831,6 +1509,7 @@ h1{font-size:21px}
 <tbody>%(trends)s</tbody>
 </table>
 </section>
+%(history_section)s
 <section class="card">
 <h2>距离 4.8 星买点</h2>
 <ul>%(distance)s</ul>
@@ -877,6 +1556,7 @@ T3 较 T1 跌 20%%，或 250 日线转上。<br>
         "alloc_card": alloc_card,
         "trs": "".join(trs),
         "trends": "".join(trend_rows),
+        "history_section": history_section,
         "distance": "".join(distance),
         "v3_items": "".join(v3_items),
     }
@@ -1088,6 +1768,8 @@ def main(argv=None):
     ap.add_argument("--refresh", action="store_true",
                     help="先联网刷新指数估值历史（失败则继续用缓存）")
     ap.add_argument("--json", action="store_true", help="输出 JSON")
+    ap.add_argument("--rebuild-history", action="store_true",
+                    help="丢弃已有星级历史，用官方估值全量回算（规则改动后用）")
     ap.add_argument("--push", action="store_true",
                     help="通过 Server酱/PushPlus/邮件推送")
     ap.add_argument("--signal-only", action="store_true",
@@ -1115,11 +1797,16 @@ def main(argv=None):
         print("\nMarkdown 已写入：%s" % args.md)
 
     if args.html:
+        history = update_star_history(
+            rows, weight_hs300=args.weight_hs300,
+            force=args.rebuild_history)
         parent = os.path.dirname(os.path.abspath(args.html))
         os.makedirs(parent, exist_ok=True)
         with open(args.html, "w", encoding="utf-8") as fh:
-            fh.write(html(rows))
+            fh.write(html(rows, history=history))
         print("HTML 已写入：%s" % args.html)
+        print("星级历史：%d 条 → %s" % (len(history), HISTORY_PATH),
+              file=sys.stderr)
 
     if args.push:
         return push(rows, signal_only=args.signal_only, daily=args.daily)

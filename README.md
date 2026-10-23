@@ -294,7 +294,8 @@ python fund.py article --inbox
 - `reports/dashboard.html`：自包含面板，内联 CSS + SVG，无外部 CDN；手机/桌面都能看。
 - `reports/latest.md`：当日文字摘要。
 - `reports/weekly-YYYY-Www.md`：每周五自动生成。
-- `docs/index.html`：指数星级静态页，含中证800/中证500/沪深300/全市场估值，不含个人持仓，可直接放 GitHub Pages。
+- `docs/index.html`：指数星级静态页，含中证800/中证500/沪深300/全市场估值，不含个人持仓，可直接放 GitHub Pages。页面下半部分是**历史星级**：可切换 30/90/180/365 天走势，分页浏览每个交易日的星级，点日期查看当天明细（估值/价格星级、分位、回撤、PE/PB、点位）。
+- `data/star_history.jsonl`：每日星级历史（每个指数每天一行）。首次生成时用官方估值回算最近 3 年，之后每天只补新日期并覆盖当天快照；盘中是估算值，晚间官方数据更新后自动修正。
 - `data/history.jsonl`：所有历史信号，可用来复盘“当时为什么提醒”。
 
 面板每张卡片显示：最新净值/日涨跌、估值分位条、距 250 日高点、距高估区峰值、晨星评级、止盈阈值、当前动作、250 日走势。
@@ -315,7 +316,8 @@ python fund.py article --inbox
 1. 检出仓库；
 2. 运行 `python index_watch.py --refresh --html docs/index.html`；
 3. 从东方财富/腾讯取中证800/中证500/沪深300 最新点位，按当日涨跌推算盘中 PE/PB、回撤和星级；
-4. 如果页面有变化，自动提交并推回 `main`，GitHub Pages 随后更新。
+4. 把当天快照写入 `data/star_history.jsonl`；
+5. 如果页面或历史有变化，自动提交并推回 `main`，GitHub Pages 随后更新。
 
 页面内容：
 

@@ -125,6 +125,9 @@ def _distance(row):
     if row.get("star") is not None and row["star"] >= 4.8:
         return "已到 4.8 星买点"
     bits = []
+    drop = row.get("drop_to_t1")
+    if drop is not None and drop < 0:
+        bits.append("还需跌约 %s" % _pct(-drop))
     pall = row.get("pall")
     if row.get("key") == "zz800":
         vs = row.get("val_star")
@@ -140,13 +143,13 @@ def _distance(row):
             bits.append("估值分位 %s，需 ≤20%%" % _pct(pall))
     t1 = row.get("price_t1")
     px = row.get("px_display")
-    gap = row.get("price_gap")
     if t1 is not None and px is not None:
-        if gap is not None and gap <= 0:
+        gap = t1 / px - 1.0
+        if gap >= 0:
             bits.append("价格 %s，已低于 4.8★ 门槛 %s" % (_px(px), _px(t1)))
         else:
             bits.append("价格 %s，需 ≤%s（还需跌 %s）" % (
-                _px(px), _px(t1), _pct(gap)))
+                _px(px), _px(t1), _pct(-gap)))
     return "；".join(bits)
 
 
