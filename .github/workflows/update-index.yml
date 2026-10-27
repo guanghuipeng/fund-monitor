@@ -23,20 +23,23 @@ concurrency:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    # 固定镜像，不用 ubuntu-latest：latest 会随 GitHub 迁移 LTS 悄悄换系统，
+    # 2026-10 就是这样从 24.04 跳到 26.04，导致 setup-python 找不到 3.9 而全线失败。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7.1.0
         with:
-          python-version: "3.9"
+          # 项目只用标准库；3.9 已 EOL，3.12 在 24.04 上长期有预编译包
+          python-version: "3.12"
 
       # 缓存估值历史，避免每次从零下载；仓库里也有一份基线缓存兜底
       - name: Restore valuation cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: data/cache
           key: index-cache-${{ github.run_id }}
